@@ -1,0 +1,19 @@
+[project]
+name = "anidaily"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "google-genai>=1.66.0",
+    "httpx>=0.28.1",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.0.0",
+    "pillow>=12.1.1",
+    "insightface>=0.7.3",
+    "onnxruntime>=1.24.3",
+    "mcp[cli]>=1.0.0",
+]
+
+[project.scripts]
+anidaily-mcp = "src.mcp_server:main"
