@@ -95,6 +95,18 @@ def create_project(req: ProjectCreate) -> dict:
     proj_dir.mkdir(parents=True)
     for d in _asset_dirs(req.name).values():
         d.mkdir(parents=True, exist_ok=True)
+    # 创建默认风格设定文件
+    style_path = proj_dir / "style.md"
+    style_path.write_text(
+        "# 漫画风格设定\n\n"
+        "## 画风\n- 风格：赛璐璃动画风，干净线条，明亮色彩\n- 色调：明亮活泼\n\n"
+        "## 语言\n- 对话：中文\n- 音效：日漫风拟声词\n\n"
+        "## 排版\n- 方向：竖向条漫\n- 每条格数：4-6格\n- 气泡：圆形对话框\n\n"
+        "## 角色\n- 头身比：正常（5-7头身）\n- 表情：适度夸张\n\n"
+        "## 基调\n- 风格：轻松搞笑，校园/职场日常\n- 节奏：中等，对话和动作均衡\n\n"
+        "## 场景\n- 背景：简化但有辨识度\n- 时间：现代\n",
+        encoding="utf-8",
+    )
     return {"name": proj_dir.name, "created": True}
 
 
@@ -117,6 +129,14 @@ def list_assets(project: str) -> dict[str, list[dict]]:
     for category, dir_path in _asset_dirs(project).items():
         items = []
         if dir_path.exists():
+            # 读取 assets.json 元数据
+            meta: dict[str, dict] = {}
+            meta_path = dir_path / "assets.json"
+            if meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
             for f in sorted(dir_path.iterdir()):
                 if f.name == "assets.json":
                     continue
@@ -134,8 +154,26 @@ def list_assets(project: str) -> dict[str, list[dict]]:
                         item["content"] = f.read_text(encoding="utf-8")
                     elif f.suffix.lower() == ".json":
                         item["type"] = "json"
+                    # 附加 assets.json 元数据
+                    file_meta = meta.get(f.name)
+                    if file_meta:
+                        if file_meta.get("description"):
+                            item["description"] = file_meta["description"]
+                        if file_meta.get("source_face"):
+                            item["source_face"] = file_meta["source_face"]
                     items.append(item)
         result[category] = items
+    # style.md 作为单独分类
+    style_path = _project_path(project) / "style.md"
+    if style_path.exists():
+        rel = style_path.relative_to(PROJECT_ROOT)
+        result["style"] = [{
+            "name": "style.md",
+            "path": str(style_path),
+            "url": f"/files/{rel}",
+            "type": "markdown",
+            "content": style_path.read_text(encoding="utf-8"),
+        }]
     return result
 
 
@@ -156,6 +194,27 @@ def delete_asset(req: AssetDelete) -> dict:
         return {"deleted": False, "error": "不允许删除此文件"}
     p.unlink()
     return {"deleted": True}
+
+
+class AssetUpdate(BaseModel):
+    path: str
+    content: str
+
+
+@app.put("/api/assets")
+def update_asset(req: AssetUpdate) -> dict:
+    """更新文本文件内容（md 等）。"""
+    p = Path(req.path)
+    if not p.exists():
+        return {"updated": False, "error": "文件不存在"}
+    try:
+        p.relative_to(PROJECTS_DIR)
+    except ValueError:
+        return {"updated": False, "error": "不允许修改此文件"}
+    if p.suffix.lower() not in (".md", ".txt"):
+        return {"updated": False, "error": "只允许编辑文本文件"}
+    p.write_text(req.content, encoding="utf-8")
+    return {"updated": True}
 
 
 @app.post("/api/upload")

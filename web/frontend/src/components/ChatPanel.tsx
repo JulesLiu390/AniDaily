@@ -1,15 +1,19 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import type { AttachedImage, CharacterOption, ChatMessage, ToolCallInfo } from "../api";
-import { getFileUrl, streamMessage, uploadImage } from "../api";
+import type { AttachedImage, CharacterOption, ChatMessage, ImageVerdict, PlanStep, ToolCallInfo } from "../api";
+import { deleteAsset, getFileUrl, streamMessage, uploadImage } from "../api";
 import ToolCallCard from "./ToolCallCard";
 import MessageActions from "./MessageActions";
 import CharacterSelectCard from "./CharacterSelectCard";
+import FaceSelectCard from "./FaceSelectCard";
+import TaskPlanCard from "./TaskPlanCard";
+import type { FaceInfo } from "./FaceSelectCard";
 
 interface Props {
   project: string;
   onNewImages?: () => void;
   pendingAssets?: AttachedImage[];
   onClearPendingAssets?: () => void;
+  onPendingAssetClick?: (path: string) => void;
 }
 
 let turnCounter = 0;
@@ -17,7 +21,7 @@ function newTurnId(): string {
   return `turn-${++turnCounter}-${Date.now()}`;
 }
 
-export default function ChatPanel({ project, onNewImages, pendingAssets, onClearPendingAssets }: Props) {
+export default function ChatPanel({ project, onNewImages, pendingAssets, onClearPendingAssets, onPendingAssetClick }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -29,6 +33,8 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Active plan tracking: turnId of the plan card → steps with live status
+  const [activePlan, setActivePlan] = useState<{ turnId: string; steps: PlanStep[] } | null>(null);
 
   // Reset chat when project changes
   useEffect(() => {
@@ -37,6 +43,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
     setInput("");
     setAttachedImages([]);
     setEditingTurnId(null);
+    setActivePlan(null);
   }, [project]);
 
   useEffect(() => {
@@ -139,7 +146,21 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
     turnId: string,
     overrideConversationId?: string | null,
   ) => {
-    const imagePaths = images.map((i) => i.path);
+    // Separate image vs non-image attachments
+    const imageAttachments = images.filter((i) => !i.fileType || i.fileType === "image");
+    const fileAttachments = images.filter((i) => i.fileType && i.fileType !== "image");
+    const imagePaths = imageAttachments.map((i) => i.path);
+
+    // Inject non-image file contents into the message text
+    let finalText = text;
+    if (fileAttachments.length > 0) {
+      const fileParts = fileAttachments.map((f) => {
+        const label = f.fileType === "json" ? "JSON" : "Markdown";
+        return `[附件: ${f.name} (${label})]\n${f.content || "(无内容)"}`;
+      });
+      finalText = fileParts.join("\n\n") + (text ? "\n\n" + text : "");
+    }
+
     const cidToUse = overrideConversationId !== undefined ? overrideConversationId : conversationId;
 
     // Create abort controller for this request
@@ -148,20 +169,29 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
 
     // Build user messages for this turn
     const userMsgs: ChatMessage[] = [];
-    if (images.length > 0) {
+    if (imageAttachments.length > 0) {
       userMsgs.push({
         role: "user",
         turnId,
         type: "image",
         content: "",
-        attachedImages: images,
+        attachedImages: imageAttachments,
+      });
+    }
+    if (fileAttachments.length > 0) {
+      userMsgs.push({
+        role: "user",
+        turnId,
+        type: "text",
+        content: "",
+        attachedImages: fileAttachments,
       });
     }
     userMsgs.push({
       role: "user",
       turnId,
       type: "text",
-      content: text || "(图片)",
+      content: text || (imageAttachments.length > 0 ? "(图片)" : ""),
     });
 
     const assistantMsg: ChatMessage = {
@@ -177,7 +207,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
 
     try {
       await streamMessage(
-        text || "请分析这些图片",
+        finalText || "请分析这些图片",
         cidToUse,
         {
           onConversationId: (cid) => setConversationId(cid),
@@ -193,6 +223,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
               ...msg,
               toolCalls: [...(msg.toolCalls || []), tc],
             }));
+            startPlanStep(tool);
           },
           onToolEnd: (_index, tool, result, durationMs, toolImages) => {
             updateLastAssistant((msg) => {
@@ -215,6 +246,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
               return { ...msg, toolCalls, images: newImages };
             });
             onNewImages?.();
+            advancePlan(tool);
           },
           onDone: () => {
             setLoading(false);
@@ -253,6 +285,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
     const currentAttached = [...attachedImages];
     setInput("");
     setAttachedImages([]);
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
 
     const turnId = newTurnId();
     await doSend(text, currentAttached, turnId);
@@ -340,13 +373,153 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
 
   const handleCharacterConfirm = async (selected: CharacterOption[]) => {
     if (loading || selected.length === 0) return;
-    // Send the selection back as a user message so the model knows what was confirmed
     const lines = selected.map(
       (c) => `- ${c.label || c.name}: ${c.path}`
     );
     const text = `已确认角色：\n${lines.join("\n")}`;
     const turnId = newTurnId();
     await doSend(text, [], turnId);
+  };
+
+  const handleFaceConfirm = async (selected: FaceInfo[]) => {
+    if (loading) return;
+    if (selected.length === 0) {
+      const turnId = newTurnId();
+      await doSend("用户跳过了风格化，不需要风格化任何人脸。", [], turnId);
+      return;
+    }
+    const lines = selected.map(
+      (f) => `- ${f.name}: ${f.crop_path}`
+    );
+    const text = `请风格化以下人脸：\n${lines.join("\n")}`;
+    const turnId = newTurnId();
+    await doSend(text, [], turnId);
+  };
+
+  // ========== Plan Actions ==========
+
+  const handlePlanConfirm = async (turnId: string, steps: PlanStep[]) => {
+    if (loading) return;
+    setActivePlan({ turnId, steps });
+    const enabledSteps = steps.filter((s) => s.status !== "skipped");
+    const skippedSteps = steps.filter((s) => s.status === "skipped");
+    let text = `用户确认了任务计划，请按以下步骤执行：\n`;
+    text += enabledSteps.map((s) => `${s.id}. ${s.label}`).join("\n");
+    if (skippedSteps.length > 0) {
+      text += `\n\n用户跳过了以下步骤，不要执行：\n`;
+      text += skippedSteps.map((s) => `${s.id}. ${s.label}`).join("\n");
+    }
+    const tid = newTurnId();
+    await doSend(text, [], tid);
+  };
+
+  const handlePlanRevise = async (prompt: string) => {
+    if (loading) return;
+    setActivePlan(null);
+    const tid = newTurnId();
+    await doSend(`用户要求修改计划：${prompt}`, [], tid);
+  };
+
+  // Update plan progress when tools complete
+  const advancePlan = useCallback((toolName: string) => {
+    setActivePlan((prev) => {
+      if (!prev) return prev;
+      const steps = [...prev.steps];
+      // Find the first pending step matching this tool, or first pending step
+      let matched = false;
+      for (let i = 0; i < steps.length; i++) {
+        if (steps[i].status === "active") {
+          steps[i] = { ...steps[i], status: "done" };
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        // Mark matching tool step as done
+        for (let i = 0; i < steps.length; i++) {
+          if (steps[i].status === "pending" && steps[i].tool === toolName) {
+            steps[i] = { ...steps[i], status: "done" };
+            matched = true;
+            break;
+          }
+        }
+      }
+      // Activate next pending step
+      for (let i = 0; i < steps.length; i++) {
+        if (steps[i].status === "pending") {
+          steps[i] = { ...steps[i], status: "active" };
+          break;
+        }
+      }
+      return { ...prev, steps };
+    });
+  }, []);
+
+  const startPlanStep = useCallback((toolName: string) => {
+    setActivePlan((prev) => {
+      if (!prev) return prev;
+      const steps = [...prev.steps];
+      // If no active step, activate the matching one or first pending
+      const hasActive = steps.some((s) => s.status === "active");
+      if (!hasActive) {
+        for (let i = 0; i < steps.length; i++) {
+          if (steps[i].status === "pending" && (!steps[i].tool || steps[i].tool === toolName)) {
+            steps[i] = { ...steps[i], status: "active" };
+            break;
+          }
+        }
+      }
+      return { ...prev, steps };
+    });
+  }, []);
+
+  // ========== Verdict Actions ==========
+
+  const setToolVerdict = (turnId: string, toolIndex: number, verdict: ImageVerdict) => {
+    setMessages((prev) =>
+      prev.map((msg) => {
+        if (msg.turnId !== turnId || !msg.toolCalls) return msg;
+        const toolCalls = msg.toolCalls.map((tc, i) =>
+          i === toolIndex ? { ...tc, verdict } : tc
+        );
+        return { ...msg, toolCalls };
+      })
+    );
+  };
+
+  const handleAccept = (turnId: string, toolIndex: number) => {
+    setToolVerdict(turnId, toolIndex, "accepted");
+  };
+
+  const handleRejectImage = async (turnId: string, toolIndex: number) => {
+    // Find the tool call to get the output path
+    const msg = messages.find((m) => m.turnId === turnId && m.toolCalls);
+    const tc = msg?.toolCalls?.[toolIndex];
+    if (tc?.images) {
+      for (const img of tc.images) {
+        try { await deleteAsset(img.path); } catch { /* ignore */ }
+      }
+    }
+    setToolVerdict(turnId, toolIndex, "rejected");
+    onNewImages?.();
+    // Tell agent user rejected
+    const toolName = tc?.tool || "generate";
+    const rejectTurn = newTurnId();
+    await doSend(`用户拒绝了 ${toolName} 的生成结果，请不要再使用同样的方式。`, [], rejectTurn);
+  };
+
+  const handleRevise = async (turnId: string, toolIndex: number, prompt: string) => {
+    const msg = messages.find((m) => m.turnId === turnId && m.toolCalls);
+    const tc = msg?.toolCalls?.[toolIndex];
+    const outputPath = tc?.result?.output_path as string | undefined;
+    setToolVerdict(turnId, toolIndex, "rejected");
+
+    // Send revise request with reference to the original output
+    const reviseText = outputPath
+      ? `请修改这张图片 (${outputPath})：${prompt}`
+      : `请重新生成：${prompt}`;
+    const reviseTurn = newTurnId();
+    await doSend(reviseText, [], reviseTurn);
   };
 
   const handleStop = () => {
@@ -357,7 +530,18 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
     }
   };
 
+  const composingRef = useRef(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const autoResize = () => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (composingRef.current) return; // IME 输入中，忽略 Enter
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -450,15 +634,45 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                   {allToolCalls.length > 0 && (
                     <div className="mb-2 space-y-1.5">
                       {allToolCalls.map((tc, j) =>
-                        tc.tool === "select_characters" && tc.result?.type === "character_select" ? (
+                        tc.tool === "propose_plan" && tc.result?.type === "task_plan" ? (
+                          <TaskPlanCard
+                            key={j}
+                            steps={(() => {
+                              // If this plan is active, use live steps with progress
+                              if (activePlan?.turnId === turnId) return activePlan.steps;
+                              return (tc.result.steps as PlanStep[]) || [];
+                            })()}
+                            onConfirm={(steps) => handlePlanConfirm(turnId, steps)}
+                            onRevise={handlePlanRevise}
+                            disabled={loading}
+                          />
+                        ) : tc.tool === "select_characters" && tc.result?.type === "character_select" ? (
                           <CharacterSelectCard
                             key={j}
                             options={(tc.result.options as CharacterOption[]) || []}
                             onConfirm={handleCharacterConfirm}
                             disabled={loading}
                           />
+                        ) : tc.tool === "select_faces" && tc.result?.type === "face_select" ? (
+                          <FaceSelectCard
+                            key={j}
+                            faces={((tc.result.faces as FaceInfo[]) || []).map((f) => ({
+                              ...f,
+                              crop_url: f.crop_url || "",
+                            }))}
+                            skippedSmall={0}
+                            skippedBlurry={0}
+                            onConfirm={handleFaceConfirm}
+                            disabled={loading}
+                          />
                         ) : (
-                          <ToolCallCard key={j} toolCall={tc} />
+                          <ToolCallCard
+                            key={j}
+                            toolCall={tc}
+                            onAccept={() => handleAccept(turnId, j)}
+                            onReject={() => handleRejectImage(turnId, j)}
+                            onRevise={(prompt) => handleRevise(turnId, j, prompt)}
+                          />
                         )
                       )}
                     </div>
@@ -472,7 +686,10 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                         onChange={(e) => setEditText(e.target.value)}
                         className="w-full bg-blue-400 text-white rounded-lg p-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-white min-h-[60px]"
                         autoFocus
+                        onCompositionStart={() => { composingRef.current = true; }}
+                        onCompositionEnd={() => { composingRef.current = false; }}
                         onKeyDown={(e) => {
+                          if (composingRef.current) return;
                           if (e.key === "Enter" && !e.shiftKey) {
                             e.preventDefault();
                             handleEditConfirm();
@@ -510,25 +727,20 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                     </div>
                   )}
 
-                  {/* Generated images (assistant) */}
-                  {allImages.length > 0 && (
-                    <div className="mt-2 grid grid-cols-2 gap-2">
-                      {allImages.map((img, j) => (
-                        <a
-                          key={j}
-                          href={getFileUrl(img.url)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          <img
-                            src={getFileUrl(img.url)}
-                            alt={img.tool}
-                            className="rounded-lg border border-gray-200 max-h-64 object-contain"
-                          />
-                        </a>
-                      ))}
-                    </div>
-                  )}
+                  {/* Non-generation tool images (detect_faces etc.) */}
+                  {(() => {
+                    const GENERATION_TOOLS = new Set(["stylize_character", "generate_asset", "generate_comic_strip", "edit_asset"]);
+                    const nonGenImages = allImages.filter((img) => !GENERATION_TOOLS.has(img.tool));
+                    return nonGenImages.length > 0 ? (
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        {nonGenImages.map((img, j) => (
+                          <a key={j} href={getFileUrl(img.url)} target="_blank" rel="noopener noreferrer">
+                            <img src={getFileUrl(img.url)} alt={img.tool} className="rounded-lg border border-gray-200 max-h-64 object-contain" />
+                          </a>
+                        ))}
+                      </div>
+                    ) : null;
+                  })()}
                 </div>
 
                 {/* Message actions toolbar */}
@@ -561,24 +773,43 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
           onDragLeave={() => setDragOver(false)}
           onDrop={handleDrop}
         >
-          {/* Attached images inside input box */}
+          {/* Attached assets inside input box */}
           {(attachedImages.length > 0 || uploading) && (
             <div className="px-3 pt-3 flex flex-wrap gap-2">
-              {attachedImages.map((img, i) => (
-                <div key={i} className="relative group">
-                  <img
-                    src={img.previewUrl || getFileUrl(img.url)}
-                    alt={img.name}
-                    className="w-16 h-16 object-cover rounded-xl border border-gray-200"
-                  />
-                  <button
-                    onClick={() => removeAttached(i)}
-                    className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-gray-600 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
+              {attachedImages.map((att, i) => {
+                const ft = att.fileType || "image";
+                const isImg = ft === "image";
+                return (
+                  <div
+                    key={i}
+                    className="relative group cursor-pointer"
+                    onClick={() => onPendingAssetClick?.(att.path)}
                   >
-                    ×
-                  </button>
-                </div>
-              ))}
+                    {isImg ? (
+                      <img
+                        src={att.previewUrl || getFileUrl(att.url)}
+                        alt={att.name}
+                        className="w-16 h-16 object-cover rounded-xl border border-gray-200"
+                      />
+                    ) : (
+                      <div className="h-16 flex items-center gap-1.5 rounded-xl border border-gray-200 bg-gray-50 px-2.5">
+                        <span className="text-sm text-gray-400 font-mono">
+                          {ft === "json" ? "{}" : "MD"}
+                        </span>
+                        <span className="text-[10px] text-gray-500 truncate max-w-[80px]">
+                          {att.name}
+                        </span>
+                      </div>
+                    )}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); removeAttached(i); }}
+                      className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-gray-600 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
+                    >
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
               {uploading && (
                 <div className="w-16 h-16 rounded-xl border border-dashed border-gray-300 flex items-center justify-center bg-gray-50">
                   <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
@@ -596,12 +827,16 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
 
           {/* Text input */}
           <textarea
+            ref={textareaRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => { setInput(e.target.value); autoResize(); }}
             onKeyDown={handleKeyDown}
+            onCompositionStart={() => { composingRef.current = true; }}
+            onCompositionEnd={() => { composingRef.current = false; }}
             onPaste={handlePaste}
             placeholder="输入消息，粘贴或拖拽图片... (Enter 发送)"
-            className="w-full resize-none border-0 bg-transparent px-4 py-2.5 text-sm focus:outline-none max-h-32"
+            className="w-full resize-none border-0 bg-transparent px-4 py-2.5 text-sm focus:outline-none"
+            style={{ maxHeight: 160 }}
             rows={1}
           />
 

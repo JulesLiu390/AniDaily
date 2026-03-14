@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { CharacterOption } from "../api";
 import { getFileUrl } from "../api";
 
@@ -8,12 +8,20 @@ interface Props {
   disabled?: boolean;
 }
 
+/** Group characters by source_face, ungrouped items go under "__none__". */
+function groupByFace(items: CharacterOption[]) {
+  const groups: Record<string, CharacterOption[]> = {};
+  for (const opt of items) {
+    const key = opt.source_face || "__none__";
+    (groups[key] ??= []).push(opt);
+  }
+  return groups;
+}
+
 export default function CharacterSelectCard({ options, onConfirm, disabled }: Props) {
-  // Selected slots: array to preserve order
   const [slots, setSlots] = useState<CharacterOption[]>(() =>
     options.filter((o) => o.selected)
   );
-  // Which slot index is currently open for picking (null = none)
   const [pickingSlot, setPickingSlot] = useState<number | null>(null);
   const [confirmed, setConfirmed] = useState(false);
 
@@ -43,10 +51,23 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
     onConfirm(slots);
   };
 
-  // All options not currently in a slot
   const available = options.filter((o) => !selectedPaths.has(o.path));
+
+  // Find the face option for a given source_face filename
+  const faceByFilename = useMemo(() => {
+    const map: Record<string, CharacterOption> = {};
+    for (const o of options) {
+      if (o.category === "faces") {
+        map[o.filename] = o;
+      }
+    }
+    return map;
+  }, [options]);
+
+  // Group available characters by source_face
   const availableChars = available.filter((o) => o.category === "characters");
   const availableFaces = available.filter((o) => o.category === "faces");
+  const charGroups = useMemo(() => groupByFace(availableChars), [availableChars]);
 
   if (confirmed) {
     return (
@@ -66,60 +87,84 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
     );
   }
 
-  const renderPicker = () => (
-    <div className="bg-white rounded-lg border border-gray-200 p-2 mt-2 max-h-48 overflow-y-auto">
-      {availableChars.length > 0 && (
-        <div className="mb-2">
-          <div className="text-[10px] text-gray-400 mb-1">角色素材</div>
-          <div className="flex flex-wrap gap-1.5">
-            {availableChars.map((opt) => (
-              <button
-                key={opt.path}
-                onClick={() =>
-                  pickingSlot !== null && pickingSlot < slots.length
-                    ? replaceSlot(pickingSlot, opt)
-                    : addSlot(opt)
-                }
-                className="flex items-center gap-1.5 bg-gray-50 hover:bg-blue-50 rounded-lg px-2 py-1.5 border border-gray-200 hover:border-blue-300 transition-colors"
-              >
-                <img src={getFileUrl(opt.url)} alt={opt.name} className="w-10 h-10 rounded object-cover" />
-                <div className="text-xs text-left min-w-0">
-                  <div className="text-gray-700 truncate max-w-[90px]">{opt.name}</div>
-                  <div className="text-gray-400 truncate max-w-[90px] text-[10px]">{opt.description}</div>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-      {availableFaces.length > 0 && (
-        <div>
-          <div className="text-[10px] text-gray-400 mb-1">人脸素材</div>
-          <div className="flex flex-wrap gap-1.5">
-            {availableFaces.map((opt) => (
-              <button
-                key={opt.path}
-                onClick={() =>
-                  pickingSlot !== null && pickingSlot < slots.length
-                    ? replaceSlot(pickingSlot, opt)
-                    : addSlot(opt)
-                }
-                className="flex items-center gap-1.5 bg-gray-50 hover:bg-blue-50 rounded-lg px-2 py-1.5 border border-gray-200 hover:border-blue-300 transition-colors"
-              >
-                <img src={getFileUrl(opt.url)} alt={opt.name} className="w-10 h-10 rounded object-cover" />
-                <div className="text-xs text-left min-w-0">
-                  <div className="text-gray-700 truncate max-w-[90px]">{opt.name}</div>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-      {available.length === 0 && (
-        <div className="text-xs text-gray-400 text-center py-2">没有更多素材</div>
-      )}
-    </div>
+  const handlePickerClick = (opt: CharacterOption) => {
+    if (pickingSlot !== null && pickingSlot < slots.length) {
+      replaceSlot(pickingSlot, opt);
+    } else {
+      addSlot(opt);
+    }
+  };
+
+  const renderOptionButton = (opt: CharacterOption, showDesc = true) => (
+    <button
+      key={opt.path}
+      onClick={() => handlePickerClick(opt)}
+      className="flex items-center gap-1.5 bg-gray-50 hover:bg-blue-50 rounded-lg px-2 py-1.5 border border-gray-200 hover:border-blue-300 transition-colors"
+    >
+      <img src={getFileUrl(opt.url)} alt={opt.name} className="w-10 h-10 rounded object-cover" />
+      <div className="text-xs text-left min-w-0">
+        <div className="text-gray-700 truncate max-w-[90px]">{opt.name}</div>
+        {showDesc && opt.description && (
+          <div className="text-gray-400 truncate max-w-[90px] text-[10px]">{opt.description}</div>
+        )}
+      </div>
+    </button>
   );
+
+  const renderPicker = () => {
+    const groupKeys = Object.keys(charGroups).filter((k) => k !== "__none__");
+    const ungrouped = charGroups["__none__"] || [];
+
+    return (
+      <div className="bg-white rounded-lg border border-gray-200 p-2 mt-2 max-h-56 overflow-y-auto">
+        {/* Grouped characters (by face) */}
+        {groupKeys.map((faceFile) => {
+          const faceOpt = faceByFilename[faceFile];
+          const chars = charGroups[faceFile];
+          return (
+            <div key={faceFile} className="mb-2">
+              <div className="flex items-center gap-1.5 mb-1">
+                {faceOpt && (
+                  <img src={getFileUrl(faceOpt.url)} alt={faceOpt.name} className="w-5 h-5 rounded-full object-cover" />
+                )}
+                <div className="text-[10px] text-gray-500 font-medium">
+                  {faceOpt?.name || faceFile}
+                  <span className="text-gray-400 ml-1">({chars.length} 个造型)</span>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1.5 ml-6">
+                {chars.map((opt) => renderOptionButton(opt))}
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Ungrouped characters */}
+        {ungrouped.length > 0 && (
+          <div className="mb-2">
+            <div className="text-[10px] text-gray-400 mb-1">角色素材</div>
+            <div className="flex flex-wrap gap-1.5">
+              {ungrouped.map((opt) => renderOptionButton(opt))}
+            </div>
+          </div>
+        )}
+
+        {/* Available faces */}
+        {availableFaces.length > 0 && (
+          <div>
+            <div className="text-[10px] text-gray-400 mb-1">人脸素材</div>
+            <div className="flex flex-wrap gap-1.5">
+              {availableFaces.map((opt) => renderOptionButton(opt, false))}
+            </div>
+          </div>
+        )}
+
+        {available.length === 0 && (
+          <div className="text-xs text-gray-400 text-center py-2">没有更多素材</div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 my-2">
@@ -174,7 +219,7 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
         )}
       </div>
 
-      {/* Picker panel (shown when a slot is clicked or "add" is clicked) */}
+      {/* Picker panel */}
       {pickingSlot !== null && renderPicker()}
 
       {/* Confirm button */}

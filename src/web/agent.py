@@ -200,6 +200,46 @@ TOOL_DECLARATIONS = [
             required=["preselected"],
         ),
     ),
+    FunctionDeclaration(
+        name="propose_plan",
+        description=(
+            "向用户展示任务计划。当用户的请求涉及 2 个以上步骤时，"
+            "先调用此工具让用户确认计划，用户可以跳过某些步骤或修改计划。"
+            "用户确认后再按计划逐步执行。简单请求（单步操作）不需要调用。"
+        ),
+        parameters=Schema(
+            type=Type.OBJECT,
+            properties={
+                "steps": Schema(
+                    type=Type.ARRAY,
+                    items=Schema(
+                        type=Type.OBJECT,
+                        properties={
+                            "id": Schema(type=Type.INTEGER, description="步骤序号，从1开始"),
+                            "label": Schema(type=Type.STRING, description="步骤简短描述"),
+                            "tool": Schema(type=Type.STRING, description="对应的工具名（可选，用于前端进度追踪）"),
+                            "needs_confirm": Schema(type=Type.BOOLEAN, description="是否需要用户交互确认（如选择人脸、选择角色）"),
+                        },
+                        required=["id", "label"],
+                    ),
+                    description="任务步骤列表",
+                ),
+            },
+            required=["steps"],
+        ),
+    ),
+    FunctionDeclaration(
+        name="select_faces",
+        description=(
+            "让用户从已检测的人脸中选择要风格化的人脸。"
+            "当用户要求风格化角色时，必须先调用此工具让用户勾选要风格化哪些人脸。"
+            "不要在人脸检测后自动调用，只在用户明确要求风格化时调用。"
+        ),
+        parameters=Schema(
+            type=Type.OBJECT,
+            properties={},
+        ),
+    ),
 ]
 
 
@@ -216,11 +256,14 @@ def _load_assets_json(directory: Path) -> dict:
     return {}
 
 
-def _save_asset_meta(file_path: Path, name: str, description: str) -> None:
+def _save_asset_meta(file_path: Path, name: str, description: str, source_face: str | None = None) -> None:
     """将素材的 name/description 写入所在目录的 assets.json。"""
     directory = file_path.parent
     data = _load_assets_json(directory)
-    data[file_path.name] = {"name": name, "description": description}
+    entry: dict[str, str] = {"name": name, "description": description}
+    if source_face:
+        entry["source_face"] = source_face
+    data[file_path.name] = entry
     (directory / "assets.json").write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -304,7 +347,7 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None) -> dic
     """执行指定 tool 并返回结果。"""
     # 自动将常见路径参数解析为绝对路径
     PATH_KEYS = [
-        "image_path", "face_path", "output_path", "original_image_path",
+        "image_path", "face_path", "output_path", "output_dir", "original_image_path",
         "file_path", "directory", "scene_path",
     ]
     for key in PATH_KEYS:
@@ -382,8 +425,9 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None) -> dic
             )
             # VLM 描述风格化后的角色
             desc = _describe_image(result_path)
-            _save_asset_meta(result_path, desc["name"], desc["description"])
-            return {"output_path": str(result_path), "character_name": desc["name"], "description": desc["description"]}
+            face_filename = Path(args["face_path"]).name
+            _save_asset_meta(result_path, desc["name"], desc["description"], source_face=face_filename)
+            return {"output_path": str(result_path), "character_name": desc["name"], "description": desc["description"], "source_face": face_filename}
         except Exception as e:
             return {"error": str(e)}
 
@@ -423,12 +467,23 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None) -> dic
             )
             # VLM 描述生成的素材
             desc = _describe_image(result_path)
-            _save_asset_meta(result_path, desc["name"], desc["description"])
-            return {
+            # 如果参考图来自 faces 目录，记录 source_face
+            source_face = None
+            ref_images = args.get("reference_images") or []
+            for ref in ref_images:
+                ref_p = Path(ref)
+                if "faces" in ref_p.parts:
+                    source_face = ref_p.name
+                    break
+            _save_asset_meta(result_path, desc["name"], desc["description"], source_face=source_face)
+            result_dict = {
                 "output_path": str(result_path),
                 "name": desc["name"],
                 "description": desc["description"],
             }
+            if source_face:
+                result_dict["source_face"] = source_face
+            return result_dict
         except Exception as e:
             return {"error": str(e)}
 
@@ -609,7 +664,7 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None) -> dic
                         continue
                     file_meta = meta.get(f.name, {})
                     rel = f.relative_to(PROJECT_ROOT)
-                    option = {
+                    option: dict[str, Any] = {
                         "path": str(f),
                         "url": f"/files/{rel}",
                         "filename": f.name,
@@ -619,12 +674,48 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None) -> dic
                         "selected": str(f) in preselected_paths,
                         "label": preselected_labels.get(str(f), ""),
                     }
+                    if file_meta.get("source_face"):
+                        option["source_face"] = file_meta["source_face"]
                     all_options.append(option)
 
         return {
             "type": "character_select",
             "options": all_options,
             "preselected_count": len(preselected),
+        }
+
+    elif name == "propose_plan":
+        steps = args.get("steps", [])
+        return {
+            "type": "task_plan",
+            "steps": steps,
+        }
+
+    elif name == "select_faces":
+        # 返回项目中已有的人脸供用户选择风格化
+        faces_dir = project_dir / "output" / "faces" if project_dir else None
+        face_list: list[dict] = []
+        if faces_dir and faces_dir.exists():
+            meta = _load_assets_json(faces_dir)
+            SUPPORTED = {".jpg", ".jpeg", ".png", ".webp"}
+            for f in sorted(faces_dir.iterdir()):
+                if not f.is_file() or f.suffix.lower() not in SUPPORTED:
+                    continue
+                file_meta = meta.get(f.name, {})
+                rel = f.relative_to(PROJECT_ROOT)
+                face_list.append({
+                    "index": len(face_list),
+                    "name": file_meta.get("name", f.stem),
+                    "description": file_meta.get("description", ""),
+                    "age": None,
+                    "gender": None,
+                    "crop_path": str(f),
+                    "crop_url": f"/files/{rel}",
+                })
+        return {
+            "type": "face_select",
+            "faces": face_list,
+            "count": len(face_list),
         }
 
     else:
@@ -641,12 +732,17 @@ SYSTEM_INSTRUCTION_TEMPLATE = (
     "4. 生成竖向条漫（4-6格）\n"
     "5. 读写剧本 md 文件\n\n"
     "交互规则：\n"
+    "- **任务计划**：当用户的请求涉及 2 个以上步骤时（如「检测人脸并风格化」「生成条漫」等复合任务），"
+    "**必须先调用 propose_plan** 列出步骤让用户确认。简单单步操作不需要计划。"
+    "每个步骤写清 label，可选填 tool（对应工具名）和 needs_confirm（需要用户交互的步骤如选人脸、选角色）。\n"
     "- 当用户发送图片时，不要自动执行任何工具。先确认用户的意图（例如：检测人脸？风格化角色？编辑素材？），"
     "然后再执行对应操作。\n"
     "- 只有当用户明确要求执行某个操作时，才调用对应工具。\n"
     "- 人脸检测完成后，如果检测到人脸，**必须先向用户展示检测结果**（每个人脸的编号、年龄、性别等信息），"
     "然后询问用户是否要对这些人脸进行风格化，以及要风格化哪些人（例如「全部」或「只要第1和第3个」）。"
     "**绝对不要在检测后自动调用 stylize_character**，必须等用户确认。\n"
+    "- 当用户要求风格化角色时，**必须先调用 select_faces** 让用户在前端交互式选择要风格化哪些人脸，"
+    "用户确认后再对选中的人脸逐个调用 stylize_character。\n"
     "- 工具返回的文件路径必须在后续操作中直接使用，不要猜测路径。\n"
     "- 如果不确定文件位置，先使用 list_files 工具查看。\n"
     "- **生成条漫的工作流**：\n"
@@ -656,7 +752,9 @@ SYSTEM_INSTRUCTION_TEMPLATE = (
     "  3. 用户确认角色后，写剧本（write_script），按条划分（每条4-6格）。\n"
     "  4. 把剧本展示给用户，询问：要生成几条条漫？默认1条。\n"
     "  5. 用户确认后，对每条调用一次 generate_comic_strip，传入用户确认的角色路径。\n"
-    "  6. 绝对不要用 generate_asset 生成条漫，generate_asset 不支持角色参考图。\n\n"
+    "  6. 绝对不要用 generate_asset 生成条漫，generate_asset 不支持角色参考图。\n"
+    "- **风格设定**：项目根目录有 style.md，记录画风、语言、排版等偏好。"
+    "每次生成角色、条漫或素材前，必须先用 read_script 读取 style.md 并遵守其中的设定。\n\n"
     "{project_context}"
     "回复使用中文。"
 )
@@ -683,6 +781,12 @@ class Agent:
                 f"  - 条漫: {out / 'panels'}/\n"
                 f"  - 剧本: {out / 'scripts'}/\n\n"
             )
+            # 自动注入风格设定
+            style_path = self.project_dir / "style.md"
+            if style_path.exists():
+                style_content = style_path.read_text(encoding="utf-8").strip()
+                project_context += f"漫画风格设定（用户可编辑，生成内容时必须遵守）：\n{style_content}\n\n"
+
             # 自动注入各分类已有素材
             asset_summary = self._build_asset_summary()
             if asset_summary:

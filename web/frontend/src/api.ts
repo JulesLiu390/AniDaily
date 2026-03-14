@@ -6,6 +6,8 @@ export interface Asset {
   url: string;
   type?: "image" | "markdown" | "json";
   content?: string;
+  description?: string;
+  source_face?: string;
 }
 
 export interface Assets {
@@ -17,6 +19,9 @@ export interface AttachedImage {
   url: string;
   name: string;
   previewUrl?: string;  // local blob URL for preview before upload
+  fileType?: "image" | "markdown" | "json";  // default "image"
+  content?: string;     // text content for md/json
+  description?: string;
 }
 
 export interface CharacterOption {
@@ -28,6 +33,17 @@ export interface CharacterOption {
   description: string;
   selected: boolean;
   label: string;
+  source_face?: string;
+}
+
+export type ImageVerdict = "pending" | "accepted" | "rejected";
+
+export interface PlanStep {
+  id: number;
+  label: string;
+  tool?: string;
+  needs_confirm?: boolean;
+  status?: "pending" | "active" | "done" | "skipped";
 }
 
 export interface ToolCallInfo {
@@ -37,6 +53,7 @@ export interface ToolCallInfo {
   duration_ms?: number;
   pending?: boolean;
   images?: { path: string; url: string; tool: string }[];
+  verdict?: ImageVerdict;
 }
 
 export interface ChatMessage {
@@ -89,6 +106,15 @@ export async function uploadImage(file: File, project: string): Promise<{ path: 
   const res = await fetch(`${API_BASE}/api/upload?project=${encodeURIComponent(project)}`, {
     method: "POST",
     body: formData,
+  });
+  return res.json();
+}
+
+export async function updateAsset(filePath: string, content: string): Promise<{ updated: boolean }> {
+  const res = await fetch(`${API_BASE}/api/assets`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: filePath, content }),
   });
   return res.json();
 }

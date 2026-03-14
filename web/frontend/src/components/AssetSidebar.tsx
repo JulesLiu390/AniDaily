@@ -2,6 +2,7 @@ import type { Assets } from "../api";
 import { getFileUrl, deleteAsset } from "../api";
 
 const CATEGORY_LABELS: Record<string, string> = {
+  style: "风格设定",
   originals: "原始图片",
   characters: "角色",
   faces: "人脸",

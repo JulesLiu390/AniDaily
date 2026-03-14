@@ -1,8 +1,19 @@
-import { useState } from "react";
-import type { ToolCallInfo } from "../api";
+import { useState, useRef } from "react";
+import type { ImageVerdict, ToolCallInfo } from "../api";
+import { getFileUrl } from "../api";
+
+const GENERATION_TOOLS = new Set([
+  "stylize_character",
+  "generate_asset",
+  "generate_comic_strip",
+  "edit_asset",
+]);
 
 interface Props {
   toolCall: ToolCallInfo;
+  onAccept?: () => void;
+  onReject?: () => void;
+  onRevise?: (prompt: string) => void;
 }
 
 function formatDuration(ms: number): string {
@@ -10,23 +21,42 @@ function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-export default function ToolCallCard({ toolCall }: Props) {
+export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }: Props) {
   const [expanded, setExpanded] = useState(false);
+  const [revising, setRevising] = useState(false);
+  const [reviseText, setReviseText] = useState("");
+  const composingRef = useRef(false);
   const isPending = toolCall.pending;
   const hasError = toolCall.result && "error" in toolCall.result;
+  const verdict: ImageVerdict = toolCall.verdict || "pending";
+
+  const hasImages = toolCall.images && toolCall.images.length > 0;
+  const isGenTool = GENERATION_TOOLS.has(toolCall.tool);
+  const showActions = isGenTool && hasImages && !isPending && !hasError;
+
+  const handleReviseSubmit = () => {
+    const text = reviseText.trim();
+    if (!text) return;
+    onRevise?.(text);
+    setRevising(false);
+    setReviseText("");
+  };
 
   return (
     <div
-      className={`rounded-lg border transition-colors cursor-pointer ${
+      className={`rounded-lg border transition-colors ${
         isPending
           ? "border-blue-200 bg-blue-50"
           : hasError
             ? "border-red-200 bg-red-50"
             : "border-green-200 bg-green-50"
       }`}
-      onClick={() => !isPending && setExpanded(!expanded)}
     >
-      <div className="flex items-center justify-between px-3 py-2">
+      {/* Header */}
+      <div
+        className="flex items-center justify-between px-3 py-2 cursor-pointer"
+        onClick={() => !isPending && setExpanded(!expanded)}
+      >
         <div className="flex items-center gap-2">
           {isPending ? (
             <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
@@ -52,6 +82,8 @@ export default function ToolCallCard({ toolCall }: Props) {
           )}
         </div>
       </div>
+
+      {/* Expanded details */}
       {expanded && !isPending && (
         <div className="px-3 pb-2 space-y-1 border-t border-green-100">
           <div className="text-xs text-gray-500 mt-1.5">
@@ -67,6 +99,103 @@ export default function ToolCallCard({ toolCall }: Props) {
                 {JSON.stringify(toolCall.result, null, 2)}
               </pre>
             </div>
+          )}
+        </div>
+      )}
+
+      {/* Generated images */}
+      {hasImages && (
+        <div className="px-3 pb-2">
+          <div className="grid grid-cols-2 gap-2">
+            {toolCall.images!.map((img, j) => (
+              <a
+                key={j}
+                href={getFileUrl(img.url)}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <img
+                  src={getFileUrl(img.url)}
+                  alt={img.tool}
+                  className={`rounded-lg border max-h-64 object-contain ${
+                    verdict === "rejected"
+                      ? "border-red-200 opacity-40"
+                      : verdict === "accepted"
+                        ? "border-green-300"
+                        : "border-gray-200"
+                  }`}
+                />
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Verdict actions */}
+      {showActions && (
+        <div className="px-3 pb-2">
+          {verdict === "pending" && (
+            <>
+              <div className="flex gap-2">
+                <button
+                  onClick={(e) => { e.stopPropagation(); onAccept?.(); }}
+                  className="flex-1 py-1.5 bg-green-500 text-white text-xs font-medium rounded-lg hover:bg-green-600 transition-colors"
+                >
+                  接受
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onReject?.(); }}
+                  className="flex-1 py-1.5 bg-red-100 text-red-600 text-xs font-medium rounded-lg hover:bg-red-200 transition-colors"
+                >
+                  拒绝
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); setRevising(!revising); }}
+                  className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                    revising
+                      ? "bg-blue-100 text-blue-600"
+                      : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                  }`}
+                >
+                  修改
+                </button>
+              </div>
+              {revising && (
+                <div className="mt-2 flex gap-2">
+                  <input
+                    type="text"
+                    value={reviseText}
+                    onChange={(e) => setReviseText(e.target.value)}
+                    onCompositionStart={() => { composingRef.current = true; }}
+                    onCompositionEnd={() => { composingRef.current = false; }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !composingRef.current) {
+                        e.preventDefault();
+                        handleReviseSubmit();
+                      }
+                    }}
+                    placeholder="输入修改指令..."
+                    className="flex-1 px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
+                    autoFocus
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleReviseSubmit(); }}
+                    disabled={!reviseText.trim()}
+                    className="px-3 py-1.5 bg-blue-500 text-white text-xs font-medium rounded-lg hover:bg-blue-600 disabled:opacity-30 transition-colors"
+                  >
+                    发送
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+          {verdict === "accepted" && (
+            <div className="text-xs text-green-600 font-medium text-center py-1">已接受</div>
+          )}
+          {verdict === "rejected" && (
+            <div className="text-xs text-red-400 font-medium text-center py-1">已拒绝</div>
           )}
         </div>
       )}
