@@ -13,7 +13,20 @@ dependencies = [
     "insightface>=0.7.3",
     "onnxruntime>=1.24.3",
     "mcp[cli]>=1.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "python-multipart>=0.0.9",
 ]
 
 [project.scripts]
 anidaily-mcp = "src.mcp_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+workspace = { exclude = ["web/frontend"] }

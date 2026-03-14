@@ -1,0 +1,11 @@
+google-genai>=1.66.0
+httpx>=0.28.1
+pydantic>=2.12.5
+python-dotenv>=1.0.0
+pillow>=12.1.1
+insightface>=0.7.3
+onnxruntime>=1.24.3
+mcp[cli]>=1.0.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+python-multipart>=0.0.9

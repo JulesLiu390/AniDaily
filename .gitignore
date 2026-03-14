@@ -7,3 +7,5 @@ input/*
 !input/.gitkeep
 tests/*_output/
 tests/*/output/
+web/frontend/node_modules/
+web/frontend/dist/

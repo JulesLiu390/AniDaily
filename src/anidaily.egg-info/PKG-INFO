@@ -1,0 +1,20 @@
+Metadata-Version: 2.4
+Name: anidaily
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: google-genai>=1.66.0
+Requires-Dist: httpx>=0.28.1
+Requires-Dist: pydantic>=2.12.5
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: pillow>=12.1.1
+Requires-Dist: insightface>=0.7.3
+Requires-Dist: onnxruntime>=1.24.3
+Requires-Dist: mcp[cli]>=1.0.0
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn>=0.30.0
+Requires-Dist: python-multipart>=0.0.9
+
+# AniDaily
+An app that make your daily life into Anime.

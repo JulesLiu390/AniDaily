@@ -196,6 +196,8 @@ def crop_faces(
         y2 = min(h, int(face.y2 + pad_y))
 
         cropped = img.crop((x1, y1, x2, y2))
+        if cropped.mode == "RGBA":
+            cropped = cropped.convert("RGB")
         out_path = output_dir / f"{image.stem}_face_{i}.jpg"
         cropped.save(out_path, quality=95)
         cropped_paths.append(out_path)
