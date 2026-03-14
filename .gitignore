@@ -9,3 +9,7 @@ tests/*_output/
 tests/*/output/
 web/frontend/node_modules/
 web/frontend/dist/
+logs/
+*.db
+*.db-wal
+*.db-shm

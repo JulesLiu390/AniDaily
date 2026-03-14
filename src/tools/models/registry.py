@@ -65,6 +65,11 @@ def mark_key_failure(key: str) -> None:
                 break
 
 
+def get_key_count() -> int:
+    """Return the number of available API keys."""
+    return len(_API_KEYS)
+
+
 def get_api_base() -> str:
     """返回去掉 /v1 后缀的 API base URL。"""
     return BASE_URL.rstrip("/").replace("/v1", "")

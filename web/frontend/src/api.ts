@@ -250,6 +250,43 @@ export async function streamMessage(
   }
 }
 
+// ========== 对话历史 ==========
+
+export interface Conversation {
+  id: string;
+  project: string;
+  lang: string;
+  title: string;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function fetchConversations(project: string): Promise<Conversation[]> {
+  const res = await fetch(`${API_BASE}/api/conversations?project=${encodeURIComponent(project)}`);
+  return res.json();
+}
+
+export async function deleteConversation(conversationId: string): Promise<{ deleted: boolean }> {
+  const res = await fetch(`${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}`, {
+    method: "DELETE",
+  });
+  return res.json();
+}
+
+export async function fetchUIMessages(conversationId: string): Promise<ChatMessage[]> {
+  const res = await fetch(`${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/messages`);
+  return res.json();
+}
+
+export async function saveUIMessages(conversationId: string, messages: ChatMessage[]): Promise<void> {
+  await fetch(`${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ conversation_id: conversationId, messages }),
+  });
+}
+
 export function getFileUrl(url: string): string {
   return `${API_BASE}${url}`;
 }

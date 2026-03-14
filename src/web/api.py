@@ -7,9 +7,11 @@
 import asyncio
 import json
 import logging
+import logging.handlers
 import shutil
 import uuid
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,12 +22,26 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from src.web.agent import Agent
+from src.web.db import ConversationDB
+from src.web.serializer import content_to_dict, dict_to_content
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+# ---- Logging: console + per-session file ----
+_LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+_log_file = _LOG_DIR / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+_file_handler = logging.FileHandler(_log_file, encoding="utf-8")
+_file_handler.setLevel(logging.INFO)
+_file_handler.setFormatter(_fmt)
+
+_console_handler = logging.StreamHandler()
+_console_handler.setLevel(logging.INFO)
+_console_handler.setFormatter(_fmt)
+
+logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handler])
 logger = logging.getLogger(__name__)
+logger.info(f"Log file: {_log_file}")
 
 app = FastAPI(title="AniDaily API")
 
@@ -41,6 +57,11 @@ app.add_middleware(
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 PROJECTS_DIR = PROJECT_ROOT / "projects"
 PROJECTS_DIR.mkdir(exist_ok=True)
+
+# ---- Database ----
+_DB_PATH = PROJECT_ROOT / "anidaily.db"
+db = ConversationDB(_DB_PATH)
+logger.info(f"Database: {_DB_PATH}")
 
 # 静态文件服务
 app.mount("/files", StaticFiles(directory=str(PROJECT_ROOT)), name="files")
@@ -258,12 +279,27 @@ _agents: dict[str, Agent] = {}
 
 
 def _get_agent(conversation_id: str | None, project: str | None = None, lang: str = "zh") -> tuple[str, Agent]:
-    """获取或创建对话 agent。"""
+    """获取或创建对话 agent，优先从内存取，其次从 DB 恢复历史。"""
+    # 1. In-memory hit
     if conversation_id and conversation_id in _agents:
         agent = _agents[conversation_id]
-        agent.lang = lang  # update language on existing agent
+        agent.lang = lang
         return conversation_id, agent
-    cid = conversation_id or str(uuid.uuid4())
+
+    # 2. DB restore
+    if conversation_id:
+        history_dicts = db.get_history(conversation_id)
+        if history_dicts:
+            history = [dict_to_content(d) for d in history_dicts]
+            project_dir = _project_path(project) if project else None
+            agent = Agent(project_dir=project_dir, lang=lang, history=history)
+            _agents[conversation_id] = agent
+            logger.info(f"Restored agent {conversation_id} with {len(history)} history entries")
+            return conversation_id, agent
+
+    # 3. Brand new conversation
+    project_name = project or "default"
+    cid = db.create_conversation(project_name, lang)
     project_dir = _project_path(project) if project else None
     agent = Agent(project_dir=project_dir, lang=lang)
     _agents[cid] = agent
@@ -278,6 +314,7 @@ def _sse_line(event: str, data: dict) -> str:
 async def _stream_chat(agent: Agent, cid: str, message: str, image_paths: list[str] | None) -> AsyncGenerator[str, None]:
     """在线程中运行 agent.chat_stream()，通过 queue 推送 SSE 事件。"""
     queue: asyncio.Queue[dict | None] = asyncio.Queue()
+    history_len_before = len(agent.history)
 
     def _run():
         try:
@@ -287,6 +324,12 @@ async def _stream_chat(agent: Agent, cid: str, message: str, image_paths: list[s
             logger.exception("Agent stream error")
             queue.put_nowait({"event": "error", "message": str(e)})
         finally:
+            # Persist new history entries to DB
+            for i in range(history_len_before, len(agent.history)):
+                try:
+                    db.append_history(cid, i, content_to_dict(agent.history[i]))
+                except Exception:
+                    logger.exception("Failed to persist history entry")
             queue.put_nowait(None)  # sentinel
 
     loop = asyncio.get_event_loop()
@@ -311,23 +354,21 @@ async def chat(req: ChatRequest):
     # Handle plan actions
     if req.plan_action == "confirm" and req.plan_steps:
         agent.plan_confirm(req.plan_steps, auto_execute=req.plan_auto)
-        # Mark first step active and build start message
-        first = agent._plan_current()
-        if first:
-            first["status"] = "active"
-        message = req.message or (f"用户确认了计划，开始执行步骤 {first['id']}: {first['label']}" if first else "用户确认了计划。")
+        message = req.message or "用户确认了计划，开始执行。"
     elif req.plan_action == "continue":
         agent.plan_continue(req.plan_prompt)
-        cur = agent._plan_current()
-        if cur:
-            cur["status"] = "active"
         prompt_part = f"，补充说明：{req.plan_prompt}" if req.plan_prompt else ""
-        message = (f"用户确认继续{prompt_part}，请执行步骤 {cur['id']}: {cur['label']}" if cur else req.message or "继续")
+        message = f"用户确认继续{prompt_part}。"
     elif req.plan_action == "cancel":
         agent.plan_cancel()
         return {"status": "cancelled"}
     else:
         message = req.message or "请分析这些图片"
+
+    # Auto-title on first message of a new conversation
+    if not req.conversation_id and message:
+        title = message[:50].strip()
+        db.update_conversation(cid, title=title)
 
     return StreamingResponse(
         _stream_chat(agent, cid, message, req.image_paths),
@@ -337,3 +378,37 @@ async def chat(req: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ========== 对话历史 ==========
+
+@app.get("/api/conversations")
+def list_conversations(project: str) -> list[dict]:
+    """列出项目的所有对话。"""
+    return db.list_conversations(project)
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str) -> dict:
+    """删除对话及其历史。"""
+    _agents.pop(conversation_id, None)
+    db.delete_conversation(conversation_id)
+    return {"deleted": True}
+
+
+class SaveMessagesRequest(BaseModel):
+    conversation_id: str
+    messages: list[dict]
+
+
+@app.post("/api/conversations/{conversation_id}/messages")
+def save_ui_messages(conversation_id: str, req: SaveMessagesRequest) -> dict:
+    """替换保存前端 UI 消息（清除旧消息后重新写入）。"""
+    db.replace_ui_messages(conversation_id, req.messages)
+    return {"saved": len(req.messages)}
+
+
+@app.get("/api/conversations/{conversation_id}/messages")
+def get_ui_messages(conversation_id: str) -> list[dict]:
+    """获取对话的 UI 消息。"""
+    return db.get_ui_messages(conversation_id)

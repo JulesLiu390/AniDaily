@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import type { AttachedImage, CharacterOption, ChatMessage, ImageVerdict, PlanStep, ToolCallInfo } from "../api";
-import { deleteAsset, getFileUrl, streamMessage, uploadImage } from "../api";
+import type { AttachedImage, CharacterOption, ChatMessage, Conversation, ImageVerdict, PlanStep, ToolCallInfo } from "../api";
+import { deleteAsset, deleteConversation, fetchConversations, fetchUIMessages, getFileUrl, saveUIMessages, streamMessage, uploadImage } from "../api";
 import ToolCallCard from "./ToolCallCard";
 import MessageActions from "./MessageActions";
 import CharacterSelectCard from "./CharacterSelectCard";
 import FaceSelectCard from "./FaceSelectCard";
 import TaskPlanCard from "./TaskPlanCard";
+import ConversationHistory from "./ConversationHistory";
 import type { FaceInfo } from "./FaceSelectCard";
 import { useLang } from "../LanguageContext";
 
@@ -39,18 +40,29 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
   const [planSteps, setPlanSteps] = useState<PlanStep[]>([]);
   const [planPaused, setPlanPaused] = useState(false);
   const [planTurnId, setPlanTurnId] = useState<string | null>(null);
+  // Conversation history
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationTitle, setConversationTitle] = useState("");
+  const conversationIdRef = useRef<string | null>(null);
+  useEffect(() => { conversationIdRef.current = conversationId; }, [conversationId]);
+
+  const loadConversations = useCallback(() => {
+    fetchConversations(project).then(setConversations).catch(() => {});
+  }, [project]);
 
   // Reset chat when project changes
   useEffect(() => {
     setMessages([]);
     setConversationId(null);
+    setConversationTitle("");
     setInput("");
     setAttachedImages([]);
     setEditingTurnId(null);
     setPlanSteps([]);
     setPlanPaused(false);
     setPlanTurnId(null);
-  }, [project]);
+    loadConversations();
+  }, [project, loadConversations]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -176,10 +188,20 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
   }, []);
 
   // Common SSE callbacks shared by doSend, plan actions, etc.
-  const makeCallbacks = useCallback((extraOpts?: {
+  const makeCallbacks = useCallback((_extraOpts?: {
     planAction?: string;
   }) => ({
-    onConversationId: (cid: string) => setConversationId(cid),
+    onConversationId: (cid: string) => {
+      setConversationId(cid);
+      // Set title from first user message if this is a new conversation
+      if (!conversationIdRef.current) {
+        setMessages((prev) => {
+          const firstUserMsg = prev.find(m => m.role === "user" && m.content);
+          if (firstUserMsg) setConversationTitle(firstUserMsg.content.slice(0, 50));
+          return prev;
+        });
+      }
+    },
     onTextDelta: (delta: string) => {
       updateLastAssistant((msg) => ({
         ...msg,
@@ -236,6 +258,14 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
     onDone: () => {
       setLoading(false);
       onNewImages?.();
+      // Save all UI messages to DB for conversation restore
+      const cid = conversationIdRef.current;
+      if (cid) {
+        setMessages((prev) => {
+          saveUIMessages(cid, prev).catch(() => {});
+          return prev;
+        });
+      }
     },
     onError: (error: string) => {
       updateLastAssistant((msg) => ({
@@ -622,10 +652,28 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
     const outputPath = tc?.result?.output_path as string | undefined;
     setToolVerdict(turnId, toolIndex, "rejected");
 
-    // Send revise request with reference to the original output
-    const reviseText = outputPath
+    // Build context about other tool results so agent knows what NOT to redo
+    const otherAccepted: string[] = [];
+    if (msg?.toolCalls) {
+      for (let i = 0; i < msg.toolCalls.length; i++) {
+        if (i === toolIndex) continue;
+        const other = msg.toolCalls[i];
+        const otherPath = other?.result?.output_path as string | undefined;
+        const verdict = other?.verdict;
+        if (otherPath && verdict !== "rejected") {
+          otherAccepted.push(otherPath);
+        }
+      }
+    }
+
+    // Send revise request with clear instruction to only modify this one
+    let reviseText = outputPath
       ? `请修改这张图片 (${outputPath})：${prompt}`
       : `请重新生成：${prompt}`;
+    reviseText += "\n注意：只修改这一个素材，不要重新生成其他素材。";
+    if (otherAccepted.length > 0) {
+      reviseText += `以下素材用户已接受，不要修改：${otherAccepted.join("、")}`;
+    }
     const reviseTurn = newTurnId();
     await doSend(reviseText, [], reviseTurn);
   };
@@ -635,6 +683,51 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
       abortRef.current.abort();
       abortRef.current = null;
       setLoading(false);
+      onNewImages?.();
+      // Mark any still-pending tool calls as completed (remove spinner)
+      updateLastAssistant((msg) => {
+        if (!msg.toolCalls?.some((tc) => tc.pending)) return msg;
+        return {
+          ...msg,
+          toolCalls: msg.toolCalls.map((tc) =>
+            tc.pending ? { ...tc, pending: false, result: { error: "stopped" } } : tc
+          ),
+        };
+      });
+    }
+  };
+
+  // ========== Conversation History Actions ==========
+
+  const handleRestoreConversation = async (conv: Conversation) => {
+    try {
+      const msgs = await fetchUIMessages(conv.id);
+      setMessages(msgs);
+      setConversationId(conv.id);
+      setConversationTitle(conv.title || "");
+      setPlanSteps([]);
+      setPlanPaused(false);
+    } catch (err) {
+      console.error("Failed to restore conversation:", err);
+    }
+  };
+
+  const handleNewChat = () => {
+    setMessages([]);
+    setConversationId(null);
+    setConversationTitle("");
+    setPlanSteps([]);
+    setPlanPaused(false);
+    setPlanTurnId(null);
+  };
+
+  const handleDeleteConversation = async (id: string) => {
+    try {
+      await deleteConversation(id);
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+      if (conversationId === id) handleNewChat();
+    } catch (err) {
+      console.error("Failed to delete conversation:", err);
     }
   };
 
@@ -669,6 +762,18 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
 
   return (
     <div className="flex flex-col h-full">
+      {/* Header with conversation history dropdown */}
+      <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-white shrink-0">
+        <ConversationHistory
+          conversations={conversations}
+          currentId={conversationId}
+          currentTitle={conversationTitle}
+          onSelect={handleRestoreConversation}
+          onNew={handleNewChat}
+          onDelete={handleDeleteConversation}
+          onRefresh={loadConversations}
+        />
+      </div>
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && (

@@ -21,7 +21,7 @@ from google.genai.types import (
 
 from src.tools.face_stylizer import stylize_face
 from src.tools.gemini_image import edit_image, generate_image
-from src.tools.models.registry import get_genai_client
+from src.tools.models.registry import get_genai_client, get_key_count
 from src.tools.person_detector import crop_faces
 
 logger = logging.getLogger(__name__)
@@ -219,6 +219,11 @@ TOOL_DECLARATIONS = [
                             "label": Schema(type=Type.STRING, description="步骤简短描述"),
                             "tool": Schema(type=Type.STRING, description="对应的工具名（可选，用于前端进度追踪）"),
                             "needs_confirm": Schema(type=Type.BOOLEAN, description="是否需要用户交互确认（如选择人脸、选择角色）"),
+                            "depends_on": Schema(
+                                type=Type.ARRAY,
+                                items=Schema(type=Type.INTEGER),
+                                description="依赖的步骤 id 列表。该步骤会等所有依赖完成后才执行。无依赖的步骤可并发执行。",
+                            ),
                         },
                         required=["id", "label"],
                     ),
@@ -805,7 +810,10 @@ SYSTEM_INSTRUCTION_TEMPLATE = (
     "交互规则：\n"
     "- **任务计划**：当用户的请求涉及 2 个以上步骤时（如「检测人脸并风格化」「生成条漫」等复合任务），"
     "**必须先调用 propose_plan** 列出步骤让用户确认。简单单步操作不需要计划。"
-    "每个步骤写清 label，可选填 tool（对应工具名）和 needs_confirm（需要用户交互确认后才执行的步骤）。\n"
+    "每个步骤写清 label，可选填 tool（对应工具名）、needs_confirm（需要用户交互确认后才执行的步骤）、"
+    "depends_on（依赖的步骤 id 列表，无依赖的步骤会并发执行）。\n"
+    "**depends_on 规则**：如果步骤 B 需要步骤 A 的输出结果（如文件路径），则 B 必须 depends_on: [A.id]。"
+    "同类型的独立操作（如生成多个不同角色）互相不依赖，系统会自动并发执行。\n"
     "- **needs_confirm 标记规则**：以下类型的步骤**必须**设置 needs_confirm=true：\n"
     "  - 选择类：选择人脸、选择角色\n"
     "  - 生成类：风格化角色(stylize_character)、生成条漫(generate_comic_strip)、生成素材(generate_asset)、编辑素材(edit_asset)\n"
@@ -848,27 +856,25 @@ SYSTEM_INSTRUCTION_TEMPLATE = (
 class Agent:
     """对话 Agent，维护多轮对话历史，通过 Gemini function calling 调用 tools。"""
 
-    def __init__(self, project_dir: Path | None = None, lang: str = "zh"):
-        self.history: list[Content] = []
+    def __init__(self, project_dir: Path | None = None, lang: str = "zh", history: list[Content] | None = None):
+        self.history: list[Content] = history or []
         self.project_dir = project_dir
         self.lang = lang
         # Plan execution state
         self.active_plan: list[dict] | None = None
-        self.plan_cursor: int = 0
         self.plan_paused: bool = False
-        self.plan_auto: bool = True  # auto-execute: only pause at interactive steps
+        self.plan_auto: bool = True
 
     # Tools that produce interactive UI cards — always pause even in auto mode
     INTERACTIVE_TOOLS = {"select_faces", "select_characters"}
 
-    # ---- Plan management ----
+    # ---- Plan management (DAG-based) ----
 
     def plan_confirm(self, steps: list[dict], auto_execute: bool = True) -> None:
         """User confirmed a plan. Store enabled steps and prepare for execution."""
         self.active_plan = [
             {**s, "status": "pending"} for s in steps if s.get("status") != "skipped"
         ]
-        self.plan_cursor = 0
         self.plan_paused = False
         self.plan_auto = auto_execute
 
@@ -884,26 +890,44 @@ class Agent:
                     s["status"] = "skipped"
         self.plan_paused = False
 
-    def _plan_current(self) -> dict | None:
-        if self.active_plan and 0 <= self.plan_cursor < len(self.active_plan):
-            return self.active_plan[self.plan_cursor]
+    def _plan_step_by_id(self, step_id: int) -> dict | None:
+        if not self.active_plan:
+            return None
+        for s in self.active_plan:
+            if s["id"] == step_id:
+                return s
         return None
 
-    def _plan_advance(self) -> str:
-        """Advance cursor. Returns 'gate', 'continue', or 'done'."""
-        self.plan_cursor += 1
-        nxt = self._plan_current()
-        if nxt is None:
-            self.active_plan = None
-            return "done"
-        if nxt.get("needs_confirm"):
-            # In auto mode, only gate on interactive tools (select_faces, etc.)
-            # In manual mode, gate on all needs_confirm steps
-            is_interactive = nxt.get("tool") in self.INTERACTIVE_TOOLS
-            if not self.plan_auto or is_interactive:
-                self.plan_paused = True
-                return "gate"
-        return "continue"
+    def _plan_done_ids(self) -> set[int]:
+        """IDs of all completed steps."""
+        if not self.active_plan:
+            return set()
+        return {s["id"] for s in self.active_plan if s["status"] == "done"}
+
+    def _plan_runnable(self) -> list[dict]:
+        """Return all pending steps whose dependencies are satisfied."""
+        if not self.active_plan:
+            return []
+        done = self._plan_done_ids()
+        runnable = []
+        for s in self.active_plan:
+            if s["status"] != "pending":
+                continue
+            deps = s.get("depends_on") or []
+            if all(d in done for d in deps):
+                runnable.append(s)
+        return runnable
+
+    def _plan_has_pending(self) -> bool:
+        return bool(self.active_plan and any(s["status"] in ("pending", "active") for s in self.active_plan))
+
+    def _plan_should_gate(self, step: dict) -> bool:
+        """Check if a step should gate (pause for user)."""
+        if not step.get("needs_confirm"):
+            return False
+        if self.plan_auto:
+            return step.get("tool") in self.INTERACTIVE_TOOLS
+        return True
 
     def _build_system_instruction(self) -> str:
         if self.project_dir:
@@ -984,42 +1008,19 @@ class Agent:
             ),
         )
 
-    def chat_stream(
-        self, message: str, image_paths: list[str] | None = None
-    ) -> Generator[dict, None, None]:
-        """处理一轮对话，流式返回事件。
+    # ---- Single AI round (shared by normal chat and plan steps) ----
 
-        事件类型:
-        - text_delta: {"event": "text_delta", "delta": str}
-        - tool_start:  {"event": "tool_start", "tool": str, "args": dict, "index": int}
-        - tool_end:    {"event": "tool_end", "tool": str, "result": dict, "duration_ms": int, "index": int, "images": list|None}
-        - step_done:   {"event": "step_done", "step_id": int, "cursor": int}
-        - plan_gate:   {"event": "plan_gate", "step": dict, "cursor": int}
-        - plan_done:   {"event": "plan_done"}
-        - done:        {"event": "done"}
+    def _run_ai_round(
+        self, message: str, config: GenerateContentConfig,
+        tool_index_start: int, image_paths: list[str] | None = None,
+    ) -> Generator[dict, None, int]:
+        """Run one AI round: send message, stream response, execute tool calls.
+
+        Yields SSE events. Returns the next tool_index after this round.
         """
-        # If plan is paused and user sends a message, that's the gate response
-        # (e.g., face selection confirmation). Mark current step done and advance.
-        if self.active_plan and self.plan_paused:
-            self.plan_paused = False
-            cur = self._plan_current()
-            if cur:
-                cur["status"] = "done"
-                yield {"event": "step_done", "step_id": cur["id"], "cursor": self.plan_cursor}
-                adv = self._plan_advance()
-                if adv == "done":
-                    yield {"event": "plan_done"}
-                elif adv == "gate":
-                    # Next step also needs confirm — gate again after AI processes this message
-                    pass  # Will gate after the AI round below
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        # Emit step_start for the current active step (if any)
-        if self.active_plan and not self.plan_paused:
-            cur = self._plan_current()
-            if cur and cur["status"] == "active":
-                yield {"event": "step_start", "step_id": cur["id"], "cursor": self.plan_cursor}
-
-        # 构建用户消息
+        # Build user message
         user_parts: list = []
         if image_paths:
             for img_path in image_paths:
@@ -1035,104 +1036,252 @@ class Agent:
         user_parts.append(Part.from_text(text=message))
         self.history.append(Content(role="user", parts=user_parts))
 
-        config = self._build_config()
-        tool_index = 0
+        tool_index = tool_index_start
         max_rounds = 15
 
-        for round_num in range(max_rounds):
+        for _ in range(max_rounds):
             client = get_genai_client(timeout=180_000)
-
-            # 流式调用 Gemini
             accumulated_text = ""
             function_call_parts: list = []
 
             stream = client.models.generate_content_stream(
-                model=MODEL,
-                contents=self.history,
-                config=config,
+                model=MODEL, contents=self.history, config=config,
             )
-
             for chunk in stream:
                 if not chunk.candidates:
                     continue
-                for part in chunk.candidates[0].content.parts:
+                content = chunk.candidates[0].content
+                if content is None or content.parts is None:
+                    continue
+                for part in content.parts:
                     if part.function_call is not None:
                         function_call_parts.append(part)
                     elif part.text:
                         accumulated_text += part.text
                         yield {"event": "text_delta", "delta": part.text}
 
-            # 构建完整的 content 并加入历史
             all_parts = []
             if accumulated_text:
                 all_parts.append(Part.from_text(text=accumulated_text))
             all_parts.extend(function_call_parts)
-
             if all_parts:
                 self.history.append(Content(role="model", parts=all_parts))
 
             if not function_call_parts:
                 break
 
-            # 执行 function calls
-            function_response_parts = []
+            # Execute function calls (concurrent if multiple)
+            tasks: list[dict] = []
             for fc_part in function_call_parts:
                 fc = fc_part.function_call
-                tool_name = fc.name
-                tool_args = dict(fc.args) if fc.args else {}
-
-                yield {"event": "tool_start", "tool": tool_name, "args": tool_args, "index": tool_index}
-
-                t0 = time.time()
-                result = _execute_tool(tool_name, tool_args, project_dir=self.project_dir, lang=self.lang)
-                duration_ms = round((time.time() - t0) * 1000)
-
-                # 收集生成的图片（带 mtime 缓存破坏参数）
-                images = self._collect_tool_images(tool_name, result)
-
-                yield {
-                    "event": "tool_end",
-                    "tool": tool_name,
-                    "result": result,
-                    "duration_ms": duration_ms,
-                    "index": tool_index,
-                    "images": images,
-                }
-
+                idx = tool_index
                 tool_index += 1
+                yield {"event": "tool_start", "tool": fc.name, "args": dict(fc.args) if fc.args else {}, "index": idx}
+                tasks.append({"name": fc.name, "args": dict(fc.args) if fc.args else {}, "index": idx})
 
-                function_response_parts.append(
-                    Part.from_function_response(name=tool_name, response=result)
-                )
+            if len(tasks) == 1:
+                task = tasks[0]
+                t0 = time.time()
+                result = _execute_tool(task["name"], task["args"], project_dir=self.project_dir, lang=self.lang)
+                duration_ms = round((time.time() - t0) * 1000)
+                images = self._collect_tool_images(task["name"], result)
+                yield {"event": "tool_end", "tool": task["name"], "result": result,
+                       "duration_ms": duration_ms, "index": task["index"], "images": images}
+                completed_results = [(task, result)]
+            else:
+                def _run_tool(t: dict) -> tuple[dict, dict, int]:
+                    t0 = time.time()
+                    res = _execute_tool(t["name"], t["args"], project_dir=self.project_dir, lang=self.lang)
+                    ms = round((time.time() - t0) * 1000)
+                    return t, res, ms
 
+                max_workers = min(len(tasks), get_key_count())
+                completed_results = []
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures = {pool.submit(_run_tool, t): t for t in tasks}
+                    for future in as_completed(futures):
+                        task, result, duration_ms = future.result()
+                        images = self._collect_tool_images(task["name"], result)
+                        yield {"event": "tool_end", "tool": task["name"], "result": result,
+                               "duration_ms": duration_ms, "index": task["index"], "images": images}
+                        completed_results.append((task, result))
+
+            # Add function responses to history in original order
+            by_index = {t["index"]: r for t, r in completed_results}
+            function_response_parts = [
+                Part.from_function_response(name=t["name"], response=by_index[t["index"]])
+                for t in tasks
+            ]
             self.history.append(Content(role="user", parts=function_response_parts))
 
-            # ---- Plan step advancement ----
-            if self.active_plan and not self.plan_paused:
-                cur = self._plan_current()
-                if cur and cur["status"] == "active":
-                    cur["status"] = "done"
-                    yield {"event": "step_done", "step_id": cur["id"], "cursor": self.plan_cursor}
+            # If propose_plan was called, stop
+            if any(t["name"] == "propose_plan" for t in tasks):
+                break
 
-                    adv = self._plan_advance()
-                    if adv == "done":
-                        yield {"event": "plan_done"}
-                        # Let AI finish this round naturally (no more tool calls expected)
-                    elif adv == "gate":
-                        nxt = self._plan_current()
-                        yield {"event": "plan_gate", "step": nxt, "cursor": self.plan_cursor}
-                        yield {"event": "done"}
-                        return  # Stop — wait for user
-                    else:
-                        # Auto-continue: inject next step instruction and loop
-                        nxt = self._plan_current()
-                        if nxt:
-                            nxt["status"] = "active"
-                            yield {"event": "step_start", "step_id": nxt["id"], "cursor": self.plan_cursor}
-                            step_instruction = f"继续执行计划步骤 {nxt['id']}: {nxt['label']}"
-                            self.history.append(Content(role="user", parts=[Part.from_text(text=step_instruction)]))
-                            continue  # Next iteration of the for loop
+        return tool_index
 
+    # ---- Main chat_stream ----
+
+    def chat_stream(
+        self, message: str, image_paths: list[str] | None = None
+    ) -> Generator[dict, None, None]:
+        """处理一轮对话，流式返回事件。"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        # If plan is paused and user sends a message, mark active steps done
+        if self.active_plan and self.plan_paused:
+            self.plan_paused = False
+            for s in self.active_plan:
+                if s["status"] == "active":
+                    s["status"] = "done"
+                    yield {"event": "step_done", "step_id": s["id"], "cursor": 0}
+
+        config = self._build_config()
+        tool_index = 0
+
+        # Run initial AI round with the user's message
+        tool_index = yield from self._run_ai_round(message, config, tool_index, image_paths)
+
+        # ---- Plan execution loop (DAG-based) ----
+        if self.active_plan and not self.plan_paused:
+            yield from self._execute_plan(config, tool_index)
+            return
+
+        yield {"event": "done"}
+
+    def _execute_plan(self, config: GenerateContentConfig, tool_index: int) -> Generator[dict, None, None]:
+        """Execute plan steps respecting dependencies. Concurrent where possible."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import queue as queue_module
+
+        max_iterations = 30  # safety limit
+
+        for _ in range(max_iterations):
+            if not self._plan_has_pending():
+                yield {"event": "plan_done"}
+                yield {"event": "done"}
+                return
+
+            runnable = self._plan_runnable()
+            if not runnable:
+                # No steps can run (shouldn't happen if deps are correct)
+                yield {"event": "plan_done"}
+                yield {"event": "done"}
+                return
+
+            # Separate gate steps from auto steps
+            gate_steps = [s for s in runnable if self._plan_should_gate(s)]
+            auto_steps = [s for s in runnable if not self._plan_should_gate(s)]
+
+            # If there are gate steps, pause BEFORE executing them
+            if gate_steps and not auto_steps:
+                # All runnable steps are gates — pause at first one
+                self.plan_paused = True
+                yield {"event": "plan_gate", "step": gate_steps[0], "cursor": 0}
+                yield {"event": "done"}
+                return
+
+            if gate_steps and auto_steps:
+                # Mix of gates and auto — run auto steps first, gate after
+                pass  # auto_steps will run below, gates will be picked up next iteration
+
+            if not auto_steps:
+                break
+
+            # Execute auto steps concurrently
+            # Each step gets its own AI call in a thread
+            if len(auto_steps) == 1:
+                # Single step — run in main thread (no overhead)
+                step = auto_steps[0]
+                step["status"] = "active"
+                yield {"event": "step_start", "step_id": step["id"], "cursor": 0}
+
+                instruction = f"继续执行计划步骤 {step['id']}: {step['label']}"
+                tool_index = yield from self._run_ai_round(instruction, config, tool_index)
+
+                step["status"] = "done"
+                yield {"event": "step_done", "step_id": step["id"], "cursor": 0}
+            else:
+                # Multiple independent steps — run concurrently
+                for s in auto_steps:
+                    s["status"] = "active"
+                    yield {"event": "step_start", "step_id": s["id"], "cursor": 0}
+
+                # Each concurrent step runs a full AI round in its own thread
+                # We collect events via a queue since generators can't yield from threads
+                event_queue: queue_module.Queue[dict | None] = queue_module.Queue()
+
+                def _run_step(step: dict) -> dict:
+                    """Run one plan step's AI round, collecting events into queue."""
+                    instruction = f"继续执行计划步骤 {step['id']}: {step['label']}"
+                    events: list[dict] = []
+                    # Run a non-streaming AI call for concurrent steps
+                    client = get_genai_client(timeout=180_000)
+                    try:
+                        resp = client.models.generate_content(
+                            model=MODEL, contents=self.history + [
+                                Content(role="user", parts=[Part.from_text(text=instruction)])
+                            ], config=config,
+                        )
+                    except Exception as e:
+                        return {"step": step, "error": str(e), "tool_results": [], "events": []}
+
+                    # Extract function calls from response
+                    tool_results = []
+                    text_parts = []
+                    if resp.candidates:
+                        for part in resp.candidates[0].content.parts:
+                            if part.function_call is not None:
+                                fc = part.function_call
+                                tool_name = fc.name
+                                tool_args = dict(fc.args) if fc.args else {}
+                                t0 = time.time()
+                                result = _execute_tool(tool_name, tool_args, project_dir=self.project_dir, lang=self.lang)
+                                duration_ms = round((time.time() - t0) * 1000)
+                                images = self._collect_tool_images(tool_name, result)
+                                events.append({"event": "tool_start", "tool": tool_name, "args": tool_args, "index": -1})
+                                events.append({"event": "tool_end", "tool": tool_name, "result": result,
+                                               "duration_ms": duration_ms, "index": -1, "images": images})
+                                tool_results.append((tool_name, result, part))
+                            elif part.text:
+                                text_parts.append(part.text)
+                                events.append({"event": "text_delta", "delta": part.text})
+
+                    return {"step": step, "events": events, "tool_results": tool_results,
+                            "text_parts": text_parts, "response": resp}
+
+                max_workers = min(len(auto_steps), get_key_count())
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures = {pool.submit(_run_step, s): s for s in auto_steps}
+                    for future in as_completed(futures):
+                        result = future.result()
+                        step = result["step"]
+
+                        # Assign tool_index to events
+                        for evt in result["events"]:
+                            if evt.get("index") == -1:
+                                evt["index"] = tool_index
+                                tool_index += 1
+                            yield evt
+
+                        # Update history with this step's conversation
+                        if result.get("response") and result["response"].candidates:
+                            # Add model response
+                            self.history.append(result["response"].candidates[0].content)
+                            # Add function responses
+                            if result["tool_results"]:
+                                fr_parts = [
+                                    Part.from_function_response(name=tn, response=tr)
+                                    for tn, tr, _ in result["tool_results"]
+                                ]
+                                self.history.append(Content(role="user", parts=fr_parts))
+
+                        step["status"] = "done"
+                        yield {"event": "step_done", "step_id": step["id"], "cursor": 0}
+
+        # If we exit the loop, plan is done or stuck
+        if not self._plan_has_pending():
+            yield {"event": "plan_done"}
         yield {"event": "done"}
 
     @staticmethod

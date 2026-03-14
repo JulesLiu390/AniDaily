@@ -101,6 +101,20 @@ const translations: Record<string, Record<Lang, string>> = {
   "preview.sourceFace": { zh: "来源人脸", en: "Source face" },
   "preview.sendToChat": { zh: "发送到聊天", en: "Send to chat" },
 
+  // ========== Conversation History ==========
+  "history.title": { zh: "对话记录", en: "Sessions" },
+  "history.search": { zh: "搜索对话...", en: "Search sessions..." },
+  "history.newChat": { zh: "新对话", en: "New Chat" },
+  "history.noHistory": { zh: "暂无对话记录", en: "No sessions yet" },
+  "history.untitled": { zh: "新对话", en: "New Chat" },
+  "history.delete": { zh: "删除", en: "Delete" },
+  "history.messages": { zh: "{count} 条消息", en: "{count} messages" },
+  "history.today": { zh: "今天", en: "Today" },
+  "history.yesterday": { zh: "昨天", en: "Yesterday" },
+  "history.thisWeek": { zh: "本周", en: "This Week" },
+  "history.thisMonth": { zh: "本月", en: "This Month" },
+  "history.older": { zh: "更早", en: "Older" },
+
   // ========== Asset Categories ==========
   "cat.style": { zh: "风格设定", en: "Style" },
   "cat.input": { zh: "原始图片", en: "Originals" },
