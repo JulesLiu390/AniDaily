@@ -5,13 +5,15 @@ import PreviewPanel from "./components/PreviewPanel";
 import ProjectSelector from "./components/ProjectSelector";
 import type { Asset, Assets, AttachedImage, Project } from "./api";
 import { fetchAssets, fetchProjects, createProject, deleteProject } from "./api";
+import { LanguageProvider, useLang } from "./LanguageContext";
 
 interface PreviewInfo {
   asset: Asset;
   category: string;
 }
 
-function App() {
+function AppInner() {
+  const { lang, setLang, t } = useLang();
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProject, setCurrentProject] = useState<string | null>(null);
   const [assets, setAssets] = useState<Assets>({});
@@ -62,7 +64,6 @@ function App() {
   };
 
   const handleAssetClick = (path: string) => {
-    // Toggle preview: click same asset again to close
     if (preview?.asset.path === path) {
       setPreview(null);
       return;
@@ -108,13 +109,23 @@ function App() {
 
   return (
     <div className="flex flex-col h-screen">
-      <ProjectSelector
-        projects={projects}
-        current={currentProject}
-        onSelect={setCurrentProject}
-        onCreate={handleCreateProject}
-        onDelete={handleDeleteProject}
-      />
+      <div className="flex items-center">
+        <div className="flex-1">
+          <ProjectSelector
+            projects={projects}
+            current={currentProject}
+            onSelect={setCurrentProject}
+            onCreate={handleCreateProject}
+            onDelete={handleDeleteProject}
+          />
+        </div>
+        <button
+          onClick={() => setLang(lang === "zh" ? "en" : "zh")}
+          className="mr-4 px-2 py-1 text-xs font-medium text-gray-500 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+        >
+          {lang === "zh" ? "EN" : "中文"}
+        </button>
+      </div>
       <div className="flex flex-1 min-h-0">
         <AssetSidebar
           assets={assets}
@@ -134,7 +145,7 @@ function App() {
             <div className="flex items-center justify-center h-full text-gray-400">
               <div className="text-center">
                 <div className="text-4xl mb-4">📁</div>
-                <div className="text-lg">请选择或新建一个项目</div>
+                <div className="text-lg">{t("app.selectProject")}</div>
               </div>
             </div>
           )}
@@ -150,6 +161,14 @@ function App() {
         )}
       </div>
     </div>
+  );
+}
+
+function App() {
+  return (
+    <LanguageProvider>
+      <AppInner />
+    </LanguageProvider>
   );
 }
 

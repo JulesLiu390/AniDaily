@@ -240,6 +240,24 @@ TOOL_DECLARATIONS = [
             properties={},
         ),
     ),
+    FunctionDeclaration(
+        name="rename_asset",
+        description=(
+            "重命名素材：同时更新显示名称和文件名（保留扩展名）。"
+            "当用户给角色或素材起名、备注、改名时调用此工具。"
+            "文件名默认与 name 相同，也可通过 filename 参数单独指定。"
+        ),
+        parameters=Schema(
+            type=Type.OBJECT,
+            properties={
+                "file_path": Schema(type=Type.STRING, description="素材文件路径"),
+                "name": Schema(type=Type.STRING, description="新的显示名称"),
+                "filename": Schema(type=Type.STRING, description="新的文件名（不含扩展名，可选，默认用 name）"),
+                "description": Schema(type=Type.STRING, description="新的描述（可选，不传则保留原描述）"),
+            },
+            required=["file_path", "name"],
+        ),
+    ),
 ]
 
 
@@ -343,7 +361,7 @@ def _resolve_path(p: str, project_dir: Path | None) -> str:
     return str(path)
 
 
-def _execute_tool(name: str, args: dict, project_dir: Path | None = None) -> dict:
+def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: str = "zh") -> dict:
     """执行指定 tool 并返回结果。"""
     # 自动将常见路径参数解析为绝对路径
     PATH_KEYS = [
@@ -357,6 +375,11 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None) -> dic
     for key in ["character_paths", "reference_images"]:
         if key in args and isinstance(args[key], list):
             args[key] = [_resolve_path(p, project_dir) if not Path(p).is_absolute() else p for p in args[key]]
+    # 对象数组中的 path 字段（如 preselected: [{path, label}]）
+    if "preselected" in args and isinstance(args["preselected"], list):
+        for item in args["preselected"]:
+            if isinstance(item, dict) and "path" in item and item["path"] and not Path(item["path"]).is_absolute():
+                item["path"] = _resolve_path(item["path"], project_dir)
 
     logger.info(f"执行 tool: {name}({json.dumps(args, ensure_ascii=False)[:200]})")
 
@@ -527,7 +550,7 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None) -> dic
             f"- Vertical layout, 9:16 aspect ratio\n"
             f"- Black panel borders separating each panel\n"
             f"- Manga/comic art style\n"
-            f"- Dialogue bubbles in Chinese\n"
+            f"- Dialogue bubbles in {'English' if lang == 'en' else 'Chinese'}\n"
             f"- Vary camera angles across panels (wide, medium, close-up)\n\n"
             f"Output a single vertical comic strip image."
         )
@@ -664,9 +687,10 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None) -> dic
                         continue
                     file_meta = meta.get(f.name, {})
                     rel = f.relative_to(PROJECT_ROOT)
+                    _mtime = int(f.stat().st_mtime)
                     option: dict[str, Any] = {
                         "path": str(f),
-                        "url": f"/files/{rel}",
+                        "url": f"/files/{rel}?v={_mtime}",
                         "filename": f.name,
                         "category": category,
                         "name": file_meta.get("name", f.stem),
@@ -691,6 +715,53 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None) -> dic
             "steps": steps,
         }
 
+    elif name == "rename_asset":
+        file_path = Path(args["file_path"])
+        if not file_path.exists():
+            return {"error": f"文件不存在: {args['file_path']}"}
+        directory = file_path.parent
+        old_filename = file_path.name
+        data = _load_assets_json(directory)
+        entry = data.pop(old_filename, {})
+        entry["name"] = args["name"]
+        if "description" in args and args["description"]:
+            entry["description"] = args["description"]
+
+        # Rename file on disk
+        new_stem = args.get("filename") or args["name"]
+        new_filename = new_stem + file_path.suffix
+        new_path = directory / new_filename
+        # Avoid conflict
+        if new_path.exists() and new_path != file_path:
+            import uuid as _uuid
+            new_filename = f"{new_stem}_{_uuid.uuid4().hex[:6]}{file_path.suffix}"
+            new_path = directory / new_filename
+        file_path.rename(new_path)
+
+        data[new_filename] = entry
+        (directory / "assets.json").write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        # Update source_face references in other directories
+        if project_dir:
+            for sub in (project_dir / "output").rglob("assets.json"):
+                if sub.parent == directory:
+                    continue
+                try:
+                    sub_data = json.loads(sub.read_text(encoding="utf-8"))
+                    changed = False
+                    for k, v in sub_data.items():
+                        if isinstance(v, dict) and v.get("source_face") == old_filename:
+                            v["source_face"] = new_filename
+                            changed = True
+                    if changed:
+                        sub.write_text(json.dumps(sub_data, ensure_ascii=False, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
+
+        return {"message": f"已重命名为「{args['name']}」", "file_path": str(new_path), "name": args["name"], "old_filename": old_filename, "new_filename": new_filename}
+
     elif name == "select_faces":
         # 返回项目中已有的人脸供用户选择风格化
         faces_dir = project_dir / "output" / "faces" if project_dir else None
@@ -710,7 +781,7 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None) -> dic
                     "age": None,
                     "gender": None,
                     "crop_path": str(f),
-                    "crop_url": f"/files/{rel}",
+                    "crop_url": f"/files/{rel}?v={int(f.stat().st_mtime)}",
                 })
         return {
             "type": "face_select",
@@ -734,10 +805,24 @@ SYSTEM_INSTRUCTION_TEMPLATE = (
     "交互规则：\n"
     "- **任务计划**：当用户的请求涉及 2 个以上步骤时（如「检测人脸并风格化」「生成条漫」等复合任务），"
     "**必须先调用 propose_plan** 列出步骤让用户确认。简单单步操作不需要计划。"
-    "每个步骤写清 label，可选填 tool（对应工具名）和 needs_confirm（需要用户交互的步骤如选人脸、选角色）。\n"
+    "每个步骤写清 label，可选填 tool（对应工具名）和 needs_confirm（需要用户交互确认后才执行的步骤）。\n"
+    "- **needs_confirm 标记规则**：以下类型的步骤**必须**设置 needs_confirm=true：\n"
+    "  - 选择类：选择人脸、选择角色\n"
+    "  - 生成类：风格化角色(stylize_character)、生成条漫(generate_comic_strip)、生成素材(generate_asset)、编辑素材(edit_asset)\n"
+    "  - 只有读取类(read_script)、列出文件(list_files)、重命名(rename_asset)、写入(write_script/update_script)等轻量操作不需要标记\n"
+    "  - 简单说：**凡是耗时较长或产出用户需要审阅的内容的步骤，都要标 needs_confirm=true**\n"
+    "- **严禁用文字询问确认**：绝对不要在文字中写「确认后开始执行」「准备好了吗」「您看这样可以吗」"
+    "「接下来继续吗」「是否继续」等确认语句。"
+    "所有确认必须通过 propose_plan 工具实现，前端会展示可点击的按钮。\n"
+    "- **分步执行**：用户确认计划后，系统会自动逐步发送步骤指令给你。"
+    "当你收到「继续执行计划步骤 N: xxx」的指令时，执行对应的工具调用即可，每次只执行一个步骤。"
+    "不要自行决定执行多个步骤，不要在文字中询问是否继续。\n"
     "- 当用户发送图片时，不要自动执行任何工具。先确认用户的意图（例如：检测人脸？风格化角色？编辑素材？），"
     "然后再执行对应操作。\n"
     "- 只有当用户明确要求执行某个操作时，才调用对应工具。\n"
+    "- 当用户给角色或素材起名、备注、改名时（如「这个人叫xxx」「把他命名为xxx」），"
+    "立即调用 rename_asset，它会同时重命名显示名称和文件名。"
+    "如果能从上下文推断出要重命名哪个文件，直接执行，不要反复确认。\n"
     "- 人脸检测完成后，如果检测到人脸，**必须先向用户展示检测结果**（每个人脸的编号、年龄、性别等信息），"
     "然后询问用户是否要对这些人脸进行风格化，以及要风格化哪些人（例如「全部」或「只要第1和第3个」）。"
     "**绝对不要在检测后自动调用 stylize_character**，必须等用户确认。\n"
@@ -756,16 +841,69 @@ SYSTEM_INSTRUCTION_TEMPLATE = (
     "- **风格设定**：项目根目录有 style.md，记录画风、语言、排版等偏好。"
     "每次生成角色、条漫或素材前，必须先用 read_script 读取 style.md 并遵守其中的设定。\n\n"
     "{project_context}"
-    "回复使用中文。"
+    "{lang_instruction}"
 )
 
 
 class Agent:
     """对话 Agent，维护多轮对话历史，通过 Gemini function calling 调用 tools。"""
 
-    def __init__(self, project_dir: Path | None = None):
+    def __init__(self, project_dir: Path | None = None, lang: str = "zh"):
         self.history: list[Content] = []
         self.project_dir = project_dir
+        self.lang = lang
+        # Plan execution state
+        self.active_plan: list[dict] | None = None
+        self.plan_cursor: int = 0
+        self.plan_paused: bool = False
+        self.plan_auto: bool = True  # auto-execute: only pause at interactive steps
+
+    # Tools that produce interactive UI cards — always pause even in auto mode
+    INTERACTIVE_TOOLS = {"select_faces", "select_characters"}
+
+    # ---- Plan management ----
+
+    def plan_confirm(self, steps: list[dict], auto_execute: bool = True) -> None:
+        """User confirmed a plan. Store enabled steps and prepare for execution."""
+        self.active_plan = [
+            {**s, "status": "pending"} for s in steps if s.get("status") != "skipped"
+        ]
+        self.plan_cursor = 0
+        self.plan_paused = False
+        self.plan_auto = auto_execute
+
+    def plan_continue(self, prompt: str | None = None) -> None:
+        """User clicked continue at a gate."""
+        self.plan_paused = False
+
+    def plan_cancel(self) -> None:
+        """User cancelled the plan."""
+        if self.active_plan:
+            for s in self.active_plan:
+                if s["status"] in ("pending", "active"):
+                    s["status"] = "skipped"
+        self.plan_paused = False
+
+    def _plan_current(self) -> dict | None:
+        if self.active_plan and 0 <= self.plan_cursor < len(self.active_plan):
+            return self.active_plan[self.plan_cursor]
+        return None
+
+    def _plan_advance(self) -> str:
+        """Advance cursor. Returns 'gate', 'continue', or 'done'."""
+        self.plan_cursor += 1
+        nxt = self._plan_current()
+        if nxt is None:
+            self.active_plan = None
+            return "done"
+        if nxt.get("needs_confirm"):
+            # In auto mode, only gate on interactive tools (select_faces, etc.)
+            # In manual mode, gate on all needs_confirm steps
+            is_interactive = nxt.get("tool") in self.INTERACTIVE_TOOLS
+            if not self.plan_auto or is_interactive:
+                self.plan_paused = True
+                return "gate"
+        return "continue"
 
     def _build_system_instruction(self) -> str:
         if self.project_dir:
@@ -793,7 +931,8 @@ class Agent:
                 project_context += f"当前项目已有素材：\n{asset_summary}\n"
         else:
             project_context = "所有文件路径基于项目根目录。输出文件默认放在 output/ 下。\n"
-        return SYSTEM_INSTRUCTION_TEMPLATE.format(project_context=project_context)
+        lang_instruction = "Reply in English." if self.lang == "en" else "回复使用中文。"
+        return SYSTEM_INSTRUCTION_TEMPLATE.format(project_context=project_context, lang_instruction=lang_instruction)
 
     def _build_asset_summary(self) -> str:
         """读取项目各分类的 assets.json，生成素材摘要注入到 system instruction。"""
@@ -854,8 +993,32 @@ class Agent:
         - text_delta: {"event": "text_delta", "delta": str}
         - tool_start:  {"event": "tool_start", "tool": str, "args": dict, "index": int}
         - tool_end:    {"event": "tool_end", "tool": str, "result": dict, "duration_ms": int, "index": int, "images": list|None}
+        - step_done:   {"event": "step_done", "step_id": int, "cursor": int}
+        - plan_gate:   {"event": "plan_gate", "step": dict, "cursor": int}
+        - plan_done:   {"event": "plan_done"}
         - done:        {"event": "done"}
         """
+        # If plan is paused and user sends a message, that's the gate response
+        # (e.g., face selection confirmation). Mark current step done and advance.
+        if self.active_plan and self.plan_paused:
+            self.plan_paused = False
+            cur = self._plan_current()
+            if cur:
+                cur["status"] = "done"
+                yield {"event": "step_done", "step_id": cur["id"], "cursor": self.plan_cursor}
+                adv = self._plan_advance()
+                if adv == "done":
+                    yield {"event": "plan_done"}
+                elif adv == "gate":
+                    # Next step also needs confirm — gate again after AI processes this message
+                    pass  # Will gate after the AI round below
+
+        # Emit step_start for the current active step (if any)
+        if self.active_plan and not self.plan_paused:
+            cur = self._plan_current()
+            if cur and cur["status"] == "active":
+                yield {"event": "step_start", "step_id": cur["id"], "cursor": self.plan_cursor}
+
         # 构建用户消息
         user_parts: list = []
         if image_paths:
@@ -874,14 +1037,13 @@ class Agent:
 
         config = self._build_config()
         tool_index = 0
-        max_rounds = 10
+        max_rounds = 15
 
-        for _ in range(max_rounds):
+        for round_num in range(max_rounds):
             client = get_genai_client(timeout=180_000)
 
             # 流式调用 Gemini
             accumulated_text = ""
-            accumulated_parts: list[Part] = []
             function_call_parts: list = []
 
             stream = client.models.generate_content_stream(
@@ -910,7 +1072,6 @@ class Agent:
                 self.history.append(Content(role="model", parts=all_parts))
 
             if not function_call_parts:
-                # 没有 function call，结束
                 break
 
             # 执行 function calls
@@ -923,28 +1084,11 @@ class Agent:
                 yield {"event": "tool_start", "tool": tool_name, "args": tool_args, "index": tool_index}
 
                 t0 = time.time()
-                result = _execute_tool(tool_name, tool_args, project_dir=self.project_dir)
+                result = _execute_tool(tool_name, tool_args, project_dir=self.project_dir, lang=self.lang)
                 duration_ms = round((time.time() - t0) * 1000)
 
-                # 收集生成的图片
-                images = None
-                if "output_path" in result:
-                    out_path = Path(result["output_path"])
-                    if out_path.exists():
-                        rel = out_path.relative_to(PROJECT_ROOT)
-                        images = [{"path": str(out_path), "url": f"/files/{rel}", "tool": tool_name}]
-                # detect_faces 返回多张裁剪图
-                if "faces" in result and isinstance(result["faces"], list):
-                    face_images = []
-                    for face_info in result["faces"]:
-                        cp = face_info.get("crop_path")
-                        if cp:
-                            cp_path = Path(cp)
-                            if cp_path.exists():
-                                rel = cp_path.relative_to(PROJECT_ROOT)
-                                face_images.append({"path": cp, "url": f"/files/{rel}", "tool": tool_name})
-                    if face_images:
-                        images = (images or []) + face_images
+                # 收集生成的图片（带 mtime 缓存破坏参数）
+                images = self._collect_tool_images(tool_name, result)
 
                 yield {
                     "event": "tool_end",
@@ -963,4 +1107,54 @@ class Agent:
 
             self.history.append(Content(role="user", parts=function_response_parts))
 
+            # ---- Plan step advancement ----
+            if self.active_plan and not self.plan_paused:
+                cur = self._plan_current()
+                if cur and cur["status"] == "active":
+                    cur["status"] = "done"
+                    yield {"event": "step_done", "step_id": cur["id"], "cursor": self.plan_cursor}
+
+                    adv = self._plan_advance()
+                    if adv == "done":
+                        yield {"event": "plan_done"}
+                        # Let AI finish this round naturally (no more tool calls expected)
+                    elif adv == "gate":
+                        nxt = self._plan_current()
+                        yield {"event": "plan_gate", "step": nxt, "cursor": self.plan_cursor}
+                        yield {"event": "done"}
+                        return  # Stop — wait for user
+                    else:
+                        # Auto-continue: inject next step instruction and loop
+                        nxt = self._plan_current()
+                        if nxt:
+                            nxt["status"] = "active"
+                            yield {"event": "step_start", "step_id": nxt["id"], "cursor": self.plan_cursor}
+                            step_instruction = f"继续执行计划步骤 {nxt['id']}: {nxt['label']}"
+                            self.history.append(Content(role="user", parts=[Part.from_text(text=step_instruction)]))
+                            continue  # Next iteration of the for loop
+
         yield {"event": "done"}
+
+    @staticmethod
+    def _collect_tool_images(tool_name: str, result: dict) -> list[dict] | None:
+        """Extract generated image info from tool result with mtime cache-busting."""
+        images = None
+        if "output_path" in result:
+            out_path = Path(result["output_path"])
+            if out_path.exists():
+                rel = out_path.relative_to(PROJECT_ROOT)
+                mtime = int(out_path.stat().st_mtime)
+                images = [{"path": str(out_path), "url": f"/files/{rel}?v={mtime}", "tool": tool_name}]
+        if "faces" in result and isinstance(result["faces"], list):
+            face_images = []
+            for face_info in result["faces"]:
+                cp = face_info.get("crop_path")
+                if cp:
+                    cp_path = Path(cp)
+                    if cp_path.exists():
+                        rel = cp_path.relative_to(PROJECT_ROOT)
+                        mtime = int(cp_path.stat().st_mtime)
+                        face_images.append({"path": cp, "url": f"/files/{rel}?v={mtime}", "tool": tool_name})
+            if face_images:
+                images = (images or []) + face_images
+        return images

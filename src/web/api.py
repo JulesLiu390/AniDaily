@@ -142,10 +142,11 @@ def list_assets(project: str) -> dict[str, list[dict]]:
                     continue
                 if f.is_file():
                     rel = f.relative_to(PROJECT_ROOT)
+                    mtime = int(f.stat().st_mtime)
                     item: dict[str, Any] = {
                         "name": f.name,
                         "path": str(f),
-                        "url": f"/files/{rel}",
+                        "url": f"/files/{rel}?v={mtime}",
                     }
                     if f.suffix.lower() in SUPPORTED_IMAGE_EXTS:
                         item["type"] = "image"
@@ -241,23 +242,30 @@ async def upload_image(file: UploadFile, project: str) -> dict:
 # ========== 对话 (SSE 流式) ==========
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = ""
     conversation_id: str | None = None
     image_paths: list[str] | None = None
     project: str | None = None
+    lang: str | None = None
+    plan_action: str | None = None       # "confirm" | "continue" | "cancel"
+    plan_steps: list[dict] | None = None  # steps for "confirm"
+    plan_prompt: str | None = None        # extra instruction for "continue"
+    plan_auto: bool = True               # auto-execute (only pause at interactive steps)
 
 
 # 对话 agent 实例管理
 _agents: dict[str, Agent] = {}
 
 
-def _get_agent(conversation_id: str | None, project: str | None = None) -> tuple[str, Agent]:
+def _get_agent(conversation_id: str | None, project: str | None = None, lang: str = "zh") -> tuple[str, Agent]:
     """获取或创建对话 agent。"""
     if conversation_id and conversation_id in _agents:
-        return conversation_id, _agents[conversation_id]
+        agent = _agents[conversation_id]
+        agent.lang = lang  # update language on existing agent
+        return conversation_id, agent
     cid = conversation_id or str(uuid.uuid4())
     project_dir = _project_path(project) if project else None
-    agent = Agent(project_dir=project_dir)
+    agent = Agent(project_dir=project_dir, lang=lang)
     _agents[cid] = agent
     return cid, agent
 
@@ -298,10 +306,31 @@ async def _stream_chat(agent: Agent, cid: str, message: str, image_paths: list[s
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     """SSE 流式对话接口。"""
-    cid, agent = _get_agent(req.conversation_id, req.project)
+    cid, agent = _get_agent(req.conversation_id, req.project, req.lang or "zh")
+
+    # Handle plan actions
+    if req.plan_action == "confirm" and req.plan_steps:
+        agent.plan_confirm(req.plan_steps, auto_execute=req.plan_auto)
+        # Mark first step active and build start message
+        first = agent._plan_current()
+        if first:
+            first["status"] = "active"
+        message = req.message or (f"用户确认了计划，开始执行步骤 {first['id']}: {first['label']}" if first else "用户确认了计划。")
+    elif req.plan_action == "continue":
+        agent.plan_continue(req.plan_prompt)
+        cur = agent._plan_current()
+        if cur:
+            cur["status"] = "active"
+        prompt_part = f"，补充说明：{req.plan_prompt}" if req.plan_prompt else ""
+        message = (f"用户确认继续{prompt_part}，请执行步骤 {cur['id']}: {cur['label']}" if cur else req.message or "继续")
+    elif req.plan_action == "cancel":
+        agent.plan_cancel()
+        return {"status": "cancelled"}
+    else:
+        message = req.message or "请分析这些图片"
 
     return StreamingResponse(
-        _stream_chat(agent, cid, req.message, req.image_paths),
+        _stream_chat(agent, cid, message, req.image_paths),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

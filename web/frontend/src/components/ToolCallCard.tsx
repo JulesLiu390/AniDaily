@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import type { ImageVerdict, ToolCallInfo } from "../api";
 import { getFileUrl } from "../api";
+import { useLang } from "../LanguageContext";
 
 const GENERATION_TOOLS = new Set([
   "stylize_character",
@@ -22,6 +23,7 @@ function formatDuration(ms: number): string {
 }
 
 export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }: Props) {
+  const { t } = useLang();
   const [expanded, setExpanded] = useState(false);
   const [revising, setRevising] = useState(false);
   const [reviseText, setReviseText] = useState("");
@@ -52,7 +54,6 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
             : "border-green-200 bg-green-50"
       }`}
     >
-      {/* Header */}
       <div
         className="flex items-center justify-between px-3 py-2 cursor-pointer"
         onClick={() => !isPending && setExpanded(!expanded)}
@@ -83,7 +84,6 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
         </div>
       </div>
 
-      {/* Expanded details */}
       {expanded && !isPending && (
         <div className="px-3 pb-2 space-y-1 border-t border-green-100">
           <div className="text-xs text-gray-500 mt-1.5">
@@ -103,7 +103,6 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
         </div>
       )}
 
-      {/* Generated images */}
       {hasImages && (
         <div className="px-3 pb-2">
           <div className="grid grid-cols-2 gap-2">
@@ -132,7 +131,6 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
         </div>
       )}
 
-      {/* Verdict actions */}
       {showActions && (
         <div className="px-3 pb-2">
           {verdict === "pending" && (
@@ -142,13 +140,13 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
                   onClick={(e) => { e.stopPropagation(); onAccept?.(); }}
                   className="flex-1 py-1.5 bg-green-500 text-white text-xs font-medium rounded-lg hover:bg-green-600 transition-colors"
                 >
-                  接受
+                  {t("tool.accept")}
                 </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); onReject?.(); }}
                   className="flex-1 py-1.5 bg-red-100 text-red-600 text-xs font-medium rounded-lg hover:bg-red-200 transition-colors"
                 >
-                  拒绝
+                  {t("tool.reject")}
                 </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); setRevising(!revising); }}
@@ -158,7 +156,7 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
                       : "bg-gray-100 text-gray-600 hover:bg-gray-200"
                   }`}
                 >
-                  修改
+                  {t("tool.revise")}
                 </button>
               </div>
               {revising && (
@@ -175,7 +173,7 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
                         handleReviseSubmit();
                       }
                     }}
-                    placeholder="输入修改指令..."
+                    placeholder={t("tool.revisePlaceholder")}
                     className="flex-1 px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
                     autoFocus
                     onClick={(e) => e.stopPropagation()}
@@ -185,17 +183,17 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
                     disabled={!reviseText.trim()}
                     className="px-3 py-1.5 bg-blue-500 text-white text-xs font-medium rounded-lg hover:bg-blue-600 disabled:opacity-30 transition-colors"
                   >
-                    发送
+                    {t("common.send")}
                   </button>
                 </div>
               )}
             </>
           )}
           {verdict === "accepted" && (
-            <div className="text-xs text-green-600 font-medium text-center py-1">已接受</div>
+            <div className="text-xs text-green-600 font-medium text-center py-1">{t("tool.accepted")}</div>
           )}
           {verdict === "rejected" && (
-            <div className="text-xs text-red-400 font-medium text-center py-1">已拒绝</div>
+            <div className="text-xs text-red-400 font-medium text-center py-1">{t("tool.rejected")}</div>
           )}
         </div>
       )}

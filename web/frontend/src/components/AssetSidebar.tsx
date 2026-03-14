@@ -1,15 +1,16 @@
 import type { Assets } from "../api";
 import { getFileUrl, deleteAsset } from "../api";
+import { useLang } from "../LanguageContext";
 
-const CATEGORY_LABELS: Record<string, string> = {
-  style: "风格设定",
-  originals: "原始图片",
-  characters: "角色",
-  faces: "人脸",
-  scenes: "场景",
-  scenes_raw: "场景(原图)",
-  panels: "条漫",
-  scripts: "剧本",
+const CAT_KEYS: Record<string, string> = {
+  style: "cat.style",
+  originals: "cat.input",
+  characters: "cat.stylized",
+  faces: "cat.faces",
+  scenes: "cat.scenes_stylized",
+  scenes_raw: "cat.scenes_no_people",
+  panels: "cat.panels",
+  scripts: "cat.scripts",
 };
 
 interface Props {
@@ -19,8 +20,10 @@ interface Props {
 }
 
 export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props) {
+  const { t } = useLang();
+
   const handleDelete = async (name: string, path: string) => {
-    if (!confirm(`确定删除 "${name}" 吗？`)) return;
+    if (!confirm(t("sidebar.deleteConfirm", { name }))) return;
     try {
       await deleteAsset(path);
       onRefresh?.();
@@ -32,13 +35,13 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
   return (
     <div className="w-64 bg-white border-r border-gray-200 flex flex-col h-full">
       <div className="p-3 border-b border-gray-200 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-700">素材库</h2>
+        <h2 className="text-sm font-semibold text-gray-700">{t("sidebar.title")}</h2>
         {onRefresh && (
           <button
             onClick={onRefresh}
             className="text-xs text-blue-500 hover:text-blue-700"
           >
-            刷新
+            {t("common.refresh")}
           </button>
         )}
       </div>
@@ -46,10 +49,10 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
         {Object.entries(assets).map(([category, items]) => (
           <div key={category} className="border-b border-gray-100">
             <div className="px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wide bg-gray-50">
-              {CATEGORY_LABELS[category] || category} ({items.length})
+              {t(CAT_KEYS[category] || category)} ({items.length})
             </div>
             {items.length === 0 ? (
-              <div className="px-3 py-2 text-xs text-gray-400">暂无</div>
+              <div className="px-3 py-2 text-xs text-gray-400">{t("sidebar.empty")}</div>
             ) : (
               <div className="p-2 grid grid-cols-2 gap-1.5">
                 {items.map((item) =>

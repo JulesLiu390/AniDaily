@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Project } from "../api";
+import { useLang } from "../LanguageContext";
 
 interface Props {
   projects: Project[];
@@ -10,6 +11,7 @@ interface Props {
 }
 
 export default function ProjectSelector({ projects, current, onSelect, onCreate, onDelete }: Props) {
+  const { t } = useLang();
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
 
@@ -23,14 +25,14 @@ export default function ProjectSelector({ projects, current, onSelect, onCreate,
 
   return (
     <div className="flex items-center gap-2 px-4 py-2 bg-white border-b border-gray-200">
-      <span className="text-sm text-gray-500 shrink-0">项目:</span>
+      <span className="text-sm text-gray-500 shrink-0">{t("project.label")}</span>
 
       <select
         value={current || ""}
         onChange={(e) => onSelect(e.target.value)}
         className="text-sm border border-gray-300 rounded-lg px-2 py-1 bg-white focus:outline-none focus:border-blue-400 min-w-[120px]"
       >
-        <option value="" disabled>选择项目</option>
+        <option value="" disabled>{t("project.select")}</option>
         {projects.map((p) => (
           <option key={p.name} value={p.name}>{p.name}</option>
         ))}
@@ -39,14 +41,14 @@ export default function ProjectSelector({ projects, current, onSelect, onCreate,
       {current && (
         <button
           onClick={() => {
-            if (confirm(`确定删除项目 "${current}" 吗？所有素材将被删除。`)) {
+            if (confirm(t("project.deleteConfirm", { name: current }))) {
               onDelete(current);
             }
           }}
           className="text-xs text-red-400 hover:text-red-600 transition-colors"
-          title="删除项目"
+          title={t("project.deleteTitle")}
         >
-          删除
+          {t("common.delete")}
         </button>
       )}
 
@@ -57,20 +59,20 @@ export default function ProjectSelector({ projects, current, onSelect, onCreate,
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleCreate()}
-            placeholder="项目名称"
+            placeholder={t("project.namePlaceholder")}
             className="text-sm border border-gray-300 rounded-lg px-2 py-1 w-32 focus:outline-none focus:border-blue-400"
           />
           <button
             onClick={handleCreate}
             className="text-xs text-blue-500 hover:text-blue-700"
           >
-            确定
+            {t("common.confirm")}
           </button>
           <button
             onClick={() => { setShowNew(false); setNewName(""); }}
             className="text-xs text-gray-400 hover:text-gray-600"
           >
-            取消
+            {t("common.cancel")}
           </button>
         </div>
       ) : (
@@ -78,7 +80,7 @@ export default function ProjectSelector({ projects, current, onSelect, onCreate,
           onClick={() => setShowNew(true)}
           className="text-sm text-blue-500 hover:text-blue-700 transition-colors"
         >
-          + 新建
+          {t("project.createNew")}
         </button>
       )}
     </div>

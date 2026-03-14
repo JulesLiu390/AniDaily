@@ -135,8 +135,24 @@ export interface StreamCallbacks {
   onTextDelta: (delta: string) => void;
   onToolStart: (index: number, tool: string, args: Record<string, unknown>) => void;
   onToolEnd: (index: number, tool: string, result: Record<string, unknown>, durationMs: number, images?: { path: string; url: string; tool: string }[]) => void;
+  onStepStart?: (stepId: number, cursor: number) => void;
+  onStepDone?: (stepId: number, cursor: number) => void;
+  onPlanGate?: (step: PlanStep, cursor: number) => void;
+  onPlanDone?: () => void;
   onDone: () => void;
   onError: (error: string) => void;
+}
+
+export interface ChatRequestOpts {
+  message?: string;
+  conversationId?: string | null;
+  imagePaths?: string[];
+  project?: string;
+  lang?: string;
+  planAction?: "confirm" | "continue" | "cancel";
+  planSteps?: PlanStep[];
+  planPrompt?: string;
+  planAuto?: boolean;
 }
 
 export async function streamMessage(
@@ -146,6 +162,8 @@ export async function streamMessage(
   imagePaths?: string[],
   project?: string,
   signal?: AbortSignal,
+  lang?: string,
+  opts?: Partial<Pick<ChatRequestOpts, "planAction" | "planSteps" | "planPrompt" | "planAuto">>,
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/api/chat`, {
     method: "POST",
@@ -155,6 +173,11 @@ export async function streamMessage(
       conversation_id: conversationId,
       image_paths: imagePaths,
       project,
+      lang,
+      plan_action: opts?.planAction,
+      plan_steps: opts?.planSteps,
+      plan_prompt: opts?.planPrompt,
+      plan_auto: opts?.planAuto,
     }),
     signal,
   });
@@ -198,6 +221,18 @@ export async function streamMessage(
               break;
             case "tool_end":
               callbacks.onToolEnd(data.index, data.tool, data.result, data.duration_ms, data.images);
+              break;
+            case "step_start":
+              callbacks.onStepStart?.(data.step_id, data.cursor);
+              break;
+            case "step_done":
+              callbacks.onStepDone?.(data.step_id, data.cursor);
+              break;
+            case "plan_gate":
+              callbacks.onPlanGate?.(data.step, data.cursor);
+              break;
+            case "plan_done":
+              callbacks.onPlanDone?.();
               break;
             case "done":
               callbacks.onDone();

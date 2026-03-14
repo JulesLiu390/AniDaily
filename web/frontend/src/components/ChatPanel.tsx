@@ -7,6 +7,7 @@ import CharacterSelectCard from "./CharacterSelectCard";
 import FaceSelectCard from "./FaceSelectCard";
 import TaskPlanCard from "./TaskPlanCard";
 import type { FaceInfo } from "./FaceSelectCard";
+import { useLang } from "../LanguageContext";
 
 interface Props {
   project: string;
@@ -22,6 +23,7 @@ function newTurnId(): string {
 }
 
 export default function ChatPanel({ project, onNewImages, pendingAssets, onClearPendingAssets, onPendingAssetClick }: Props) {
+  const { lang, t } = useLang();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -33,8 +35,10 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-  // Active plan tracking: turnId of the plan card → steps with live status
-  const [activePlan, setActivePlan] = useState<{ turnId: string; steps: PlanStep[] } | null>(null);
+  // Plan tracking — state driven by backend SSE events
+  const [planSteps, setPlanSteps] = useState<PlanStep[]>([]);
+  const [planPaused, setPlanPaused] = useState(false);
+  const [planTurnId, setPlanTurnId] = useState<string | null>(null);
 
   // Reset chat when project changes
   useEffect(() => {
@@ -43,7 +47,9 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
     setInput("");
     setAttachedImages([]);
     setEditingTurnId(null);
-    setActivePlan(null);
+    setPlanSteps([]);
+    setPlanPaused(false);
+    setPlanTurnId(null);
   }, [project]);
 
   useEffect(() => {
@@ -139,12 +145,114 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
     });
   }, []);
 
+  // Build a context summary from prior messages (for retry/edit with fresh Agent)
+  const buildContext = useCallback((priorMessages: ChatMessage[]): string => {
+    if (priorMessages.length === 0) return "";
+    const lines: string[] = [];
+    let lastTurnId = "";
+    for (const msg of priorMessages) {
+      if (msg.turnId === lastTurnId) continue; // one line per turn
+      lastTurnId = msg.turnId;
+      if (msg.role === "user") {
+        const turnMsgs = priorMessages.filter((m) => m.turnId === msg.turnId);
+        const text = turnMsgs.map((m) => m.content).filter(Boolean).join(" ");
+        const imgs = turnMsgs.flatMap((m) => m.attachedImages || []);
+        const imgNote = imgs.length > 0 ? `[${imgs.length}张图片] ` : "";
+        if (text || imgNote) lines.push(`用户: ${imgNote}${text}`);
+      } else {
+        const turnMsgs = priorMessages.filter((m) => m.turnId === msg.turnId);
+        const text = turnMsgs.map((m) => m.content).filter(Boolean).join(" ");
+        const tools = turnMsgs.flatMap((m) => m.toolCalls || []);
+        const toolNotes = tools.map((tc) => {
+          const status = tc.result?.error ? "失败" : "完成";
+          return `[${tc.tool} ${status}]`;
+        });
+        const combined = [...toolNotes, text].filter(Boolean).join(" ");
+        if (combined) lines.push(`助手: ${combined}`);
+      }
+    }
+    if (lines.length === 0) return "";
+    return `[以下是之前的对话记录，请基于此上下文继续]\n${lines.join("\n")}\n[对话记录结束]\n\n`;
+  }, []);
+
+  // Common SSE callbacks shared by doSend, plan actions, etc.
+  const makeCallbacks = useCallback((extraOpts?: {
+    planAction?: string;
+  }) => ({
+    onConversationId: (cid: string) => setConversationId(cid),
+    onTextDelta: (delta: string) => {
+      updateLastAssistant((msg) => ({
+        ...msg,
+        content: msg.content + delta,
+      }));
+    },
+    onToolStart: (_index: number, tool: string, args: Record<string, unknown>) => {
+      const tc: ToolCallInfo = { tool, args, pending: true };
+      updateLastAssistant((msg) => ({
+        ...msg,
+        toolCalls: [...(msg.toolCalls || []), tc],
+      }));
+    },
+    onToolEnd: (_index: number, tool: string, result: Record<string, unknown>, durationMs: number, toolImages?: { path: string; url: string; tool: string }[]) => {
+      updateLastAssistant((msg) => {
+        const toolCalls = [...(msg.toolCalls || [])];
+        const tcIdx = toolCalls.findIndex(
+          (tc) => tc.tool === tool && tc.pending
+        );
+        if (tcIdx >= 0) {
+          toolCalls[tcIdx] = {
+            ...toolCalls[tcIdx],
+            result,
+            duration_ms: durationMs,
+            pending: false,
+            images: toolImages,
+          };
+        }
+        const newImages = toolImages
+          ? [...(msg.images || []), ...toolImages]
+          : msg.images;
+        return { ...msg, toolCalls, images: newImages };
+      });
+      onNewImages?.();
+    },
+    onStepStart: (stepId: number) => {
+      setPlanSteps((prev) => prev.map((s) =>
+        s.id === stepId ? { ...s, status: "active" as const } : s
+      ));
+    },
+    onStepDone: (stepId: number) => {
+      setPlanSteps((prev) => prev.map((s) =>
+        s.id === stepId ? { ...s, status: "done" as const } : s
+      ));
+    },
+    onPlanGate: () => {
+      setPlanPaused(true);
+      setLoading(false);
+    },
+    onPlanDone: () => {
+      setPlanPaused(false);
+      setPlanTurnId(null);
+    },
+    onDone: () => {
+      setLoading(false);
+      onNewImages?.();
+    },
+    onError: (error: string) => {
+      updateLastAssistant((msg) => ({
+        ...msg,
+        content: msg.content + `\n${t("chat.errorPrefix")}: ${error}`,
+      }));
+      setLoading(false);
+    },
+  }), [onNewImages, updateLastAssistant, t]);
+
   // Send a message (used by handleSend, handleRetry, handleEditConfirm)
   const doSend = useCallback(async (
     text: string,
     images: AttachedImage[],
     turnId: string,
     overrideConversationId?: string | null,
+    hiddenContext?: string,
   ) => {
     // Separate image vs non-image attachments
     const imageAttachments = images.filter((i) => !i.fileType || i.fileType === "image");
@@ -191,7 +299,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
       role: "user",
       turnId,
       type: "text",
-      content: text || (imageAttachments.length > 0 ? "(图片)" : ""),
+      content: text || (imageAttachments.length > 0 ? t("chat.imageLabel") : ""),
     });
 
     const assistantMsg: ChatMessage = {
@@ -205,64 +313,20 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
     setMessages((prev) => [...prev, ...userMsgs, assistantMsg]);
     setLoading(true);
 
+    // API message includes hidden context (not shown in UI)
+    const apiText = hiddenContext
+      ? `${hiddenContext}${finalText || "请分析这些图片"}`
+      : (finalText || "请分析这些图片");
+
     try {
       await streamMessage(
-        finalText || "请分析这些图片",
+        apiText,
         cidToUse,
-        {
-          onConversationId: (cid) => setConversationId(cid),
-          onTextDelta: (delta) => {
-            updateLastAssistant((msg) => ({
-              ...msg,
-              content: msg.content + delta,
-            }));
-          },
-          onToolStart: (_index, tool, args) => {
-            const tc: ToolCallInfo = { tool, args, pending: true };
-            updateLastAssistant((msg) => ({
-              ...msg,
-              toolCalls: [...(msg.toolCalls || []), tc],
-            }));
-            startPlanStep(tool);
-          },
-          onToolEnd: (_index, tool, result, durationMs, toolImages) => {
-            updateLastAssistant((msg) => {
-              const toolCalls = [...(msg.toolCalls || [])];
-              const tcIdx = toolCalls.findIndex(
-                (tc) => tc.tool === tool && tc.pending
-              );
-              if (tcIdx >= 0) {
-                toolCalls[tcIdx] = {
-                  ...toolCalls[tcIdx],
-                  result,
-                  duration_ms: durationMs,
-                  pending: false,
-                  images: toolImages,
-                };
-              }
-              const newImages = toolImages
-                ? [...(msg.images || []), ...toolImages]
-                : msg.images;
-              return { ...msg, toolCalls, images: newImages };
-            });
-            onNewImages?.();
-            advancePlan(tool);
-          },
-          onDone: () => {
-            setLoading(false);
-            onNewImages?.();
-          },
-          onError: (error) => {
-            updateLastAssistant((msg) => ({
-              ...msg,
-              content: msg.content + `\n错误: ${error}`,
-            }));
-            setLoading(false);
-          },
-        },
+        makeCallbacks(),
         imagePaths.length > 0 ? imagePaths : undefined,
         project,
         abort.signal,
+        lang,
       );
     } catch (err) {
       if (abort.signal.aborted) {
@@ -272,11 +336,11 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
       }
       updateLastAssistant((msg) => ({
         ...msg,
-        content: msg.content + `\n错误: ${err}`,
+        content: msg.content + `\n${t("chat.errorPrefix")}: ${err}`,
       }));
       setLoading(false);
     }
-  }, [conversationId, project, onNewImages, updateLastAssistant]);
+  }, [conversationId, project, onNewImages, updateLastAssistant, makeCallbacks, lang, t]);
 
   const handleSend = async () => {
     const text = input.trim();
@@ -328,14 +392,18 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
     const text = turnMsgs.find((m) => m.type === "text")?.content || "";
     const images = turnMsgs.find((m) => m.type === "image")?.attachedImages || [];
 
-    // Delete from this user turn onwards
+    // Build context from all messages before the retry point
     const idx = messages.findIndex((m) => m.turnId === userTurnId);
+    const priorMessages = messages.slice(0, idx);
+    const context = buildContext(priorMessages);
+
+    // Delete from this user turn onwards
     setMessages((prev) => prev.slice(0, idx));
     setConversationId(null);
 
-    // Re-send with explicit null conversationId (state hasn't flushed yet)
+    // Re-send with context injected into API call (not shown in UI)
     const newTurn = newTurnId();
-    await doSend(text, images, newTurn, null);
+    await doSend(text, images, newTurn, null, context);
   };
 
   const handleEditStart = (turnId: string) => {
@@ -354,8 +422,12 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
     const turnMsgs = messages.filter((m) => m.turnId === turnId);
     const images = turnMsgs.find((m) => m.type === "image")?.attachedImages || [];
 
-    // Delete from this turn onwards
+    // Build context from messages before this turn
     const idx = messages.findIndex((m) => m.turnId === turnId);
+    const priorMessages = messages.slice(0, idx);
+    const context = buildContext(priorMessages);
+
+    // Delete from this turn onwards
     setMessages((prev) => prev.slice(0, idx));
     setConversationId(null);
 
@@ -363,7 +435,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
     setEditText("");
 
     const newTurn = newTurnId();
-    await doSend(newText, images, newTurn, null);
+    await doSend(newText, images, newTurn, null, context);
   };
 
   const handleEditCancel = () => {
@@ -396,82 +468,118 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
     await doSend(text, [], turnId);
   };
 
-  // ========== Plan Actions ==========
+  // ========== Plan Actions (backend-driven) ==========
 
-  const handlePlanConfirm = async (turnId: string, steps: PlanStep[]) => {
-    if (loading) return;
-    setActivePlan({ turnId, steps });
-    const enabledSteps = steps.filter((s) => s.status !== "skipped");
-    const skippedSteps = steps.filter((s) => s.status === "skipped");
-    let text = `用户确认了任务计划，请按以下步骤执行：\n`;
-    text += enabledSteps.map((s) => `${s.id}. ${s.label}`).join("\n");
-    if (skippedSteps.length > 0) {
-      text += `\n\n用户跳过了以下步骤，不要执行：\n`;
-      text += skippedSteps.map((s) => `${s.id}. ${s.label}`).join("\n");
+  const handlePlanConfirm = async (turnId: string, steps: PlanStep[], autoExecute = true) => {
+    if (loading || !conversationId) return;
+    setPlanTurnId(turnId);
+    setPlanSteps(steps);
+    setPlanPaused(false);
+    setLoading(true);
+
+    const abort = new AbortController();
+    abortRef.current = abort;
+
+    // Add assistant message for streaming responses
+    const assistantMsg: ChatMessage = {
+      role: "assistant",
+      turnId: newTurnId(),
+      content: "",
+      toolCalls: [],
+      images: [],
+    };
+    setMessages((prev) => [...prev, assistantMsg]);
+
+    try {
+      await streamMessage(
+        "",
+        conversationId,
+        makeCallbacks(),
+        undefined,
+        project,
+        abort.signal,
+        lang,
+        { planAction: "confirm", planSteps: steps, planAuto: autoExecute },
+      );
+    } catch (err) {
+      if (!abort.signal.aborted) {
+        updateLastAssistant((msg) => ({
+          ...msg,
+          content: msg.content + `\n${t("chat.errorPrefix")}: ${err}`,
+        }));
+        setLoading(false);
+      }
     }
-    const tid = newTurnId();
-    await doSend(text, [], tid);
   };
 
   const handlePlanRevise = async (prompt: string) => {
     if (loading) return;
-    setActivePlan(null);
+    setPlanTurnId(null);
+    setPlanSteps([]);
     const tid = newTurnId();
     await doSend(`用户要求修改计划：${prompt}`, [], tid);
   };
 
-  // Update plan progress when tools complete
-  const advancePlan = useCallback((toolName: string) => {
-    setActivePlan((prev) => {
-      if (!prev) return prev;
-      const steps = [...prev.steps];
-      // Find the first pending step matching this tool, or first pending step
-      let matched = false;
-      for (let i = 0; i < steps.length; i++) {
-        if (steps[i].status === "active") {
-          steps[i] = { ...steps[i], status: "done" };
-          matched = true;
-          break;
-        }
-      }
-      if (!matched) {
-        // Mark matching tool step as done
-        for (let i = 0; i < steps.length; i++) {
-          if (steps[i].status === "pending" && steps[i].tool === toolName) {
-            steps[i] = { ...steps[i], status: "done" };
-            matched = true;
-            break;
-          }
-        }
-      }
-      // Activate next pending step
-      for (let i = 0; i < steps.length; i++) {
-        if (steps[i].status === "pending") {
-          steps[i] = { ...steps[i], status: "active" };
-          break;
-        }
-      }
-      return { ...prev, steps };
-    });
-  }, []);
+  const handlePlanContinue = async (prompt?: string) => {
+    if (loading || !conversationId) return;
+    setPlanPaused(false);
+    setLoading(true);
 
-  const startPlanStep = useCallback((toolName: string) => {
-    setActivePlan((prev) => {
-      if (!prev) return prev;
-      const steps = [...prev.steps];
-      // If no active step, activate the matching one or first pending
-      const hasActive = steps.some((s) => s.status === "active");
-      if (!hasActive) {
-        for (let i = 0; i < steps.length; i++) {
-          if (steps[i].status === "pending" && (!steps[i].tool || steps[i].tool === toolName)) {
-            steps[i] = { ...steps[i], status: "active" };
-            break;
-          }
-        }
+    const abort = new AbortController();
+    abortRef.current = abort;
+
+    const assistantMsg: ChatMessage = {
+      role: "assistant",
+      turnId: newTurnId(),
+      content: "",
+      toolCalls: [],
+      images: [],
+    };
+    setMessages((prev) => [...prev, assistantMsg]);
+
+    try {
+      await streamMessage(
+        "",
+        conversationId,
+        makeCallbacks(),
+        undefined,
+        project,
+        abort.signal,
+        lang,
+        { planAction: "continue", planPrompt: prompt },
+      );
+    } catch (err) {
+      if (!abort.signal.aborted) {
+        updateLastAssistant((msg) => ({
+          ...msg,
+          content: msg.content + `\n${t("chat.errorPrefix")}: ${err}`,
+        }));
+        setLoading(false);
       }
-      return { ...prev, steps };
-    });
-  }, []);
+    }
+  };
+
+  const handlePlanCancel = async () => {
+    setPlanSteps((prev) => prev.map((s) =>
+      s.status === "pending" || s.status === "active"
+        ? { ...s, status: "skipped" as const }
+        : s
+    ));
+    setPlanPaused(false);
+    if (conversationId) {
+      // Fire-and-forget cancel to backend
+      fetch(`http://localhost:8000/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversation_id: conversationId,
+          plan_action: "cancel",
+          project,
+          lang,
+        }),
+      }).catch(() => {});
+    }
+  };
 
   // ========== Verdict Actions ==========
 
@@ -566,13 +674,13 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
         {messages.length === 0 && (
           <div className="text-center text-gray-400 mt-20">
             <div className="text-4xl mb-4">🎬</div>
-            <div className="text-lg font-medium">AniDaily</div>
-            <div className="text-sm mt-1">动画条漫生成助手</div>
+            <div className="text-lg font-medium">{t("chat.appName")}</div>
+            <div className="text-sm mt-1">{t("chat.appSubtitle")}</div>
             <div className="text-xs mt-4 text-gray-300">
-              试试: &quot;帮我检测这张图中的人脸&quot; 或 &quot;生成一个穿红裙子的女孩角色&quot;
+              {t("chat.exampleHint")}
             </div>
             <div className="text-xs mt-1 text-gray-300">
-              可以上传图片或点击侧边栏素材引用到对话中
+              {t("chat.uploadHint")}
             </div>
           </div>
         )}
@@ -637,13 +745,12 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                         tc.tool === "propose_plan" && tc.result?.type === "task_plan" ? (
                           <TaskPlanCard
                             key={j}
-                            steps={(() => {
-                              // If this plan is active, use live steps with progress
-                              if (activePlan?.turnId === turnId) return activePlan.steps;
-                              return (tc.result.steps as PlanStep[]) || [];
-                            })()}
-                            onConfirm={(steps) => handlePlanConfirm(turnId, steps)}
+                            steps={planTurnId === turnId ? planSteps : (tc.result.steps as PlanStep[]) || []}
+                            onConfirm={(steps, auto) => handlePlanConfirm(turnId, steps, auto)}
                             onRevise={handlePlanRevise}
+                            onContinue={handlePlanContinue}
+                            onCancel={handlePlanCancel}
+                            paused={planTurnId === turnId && planPaused}
                             disabled={loading}
                           />
                         ) : tc.tool === "select_characters" && tc.result?.type === "character_select" ? (
@@ -702,13 +809,13 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                           onClick={handleEditCancel}
                           className="px-2 py-0.5 text-xs bg-blue-400 text-white rounded hover:bg-blue-300"
                         >
-                          取消
+                          {t("common.cancel")}
                         </button>
                         <button
                           onClick={handleEditConfirm}
                           className="px-2 py-0.5 text-xs bg-white text-blue-600 rounded hover:bg-gray-100"
                         >
-                          发送
+                          {t("common.send")}
                         </button>
                       </div>
                     </div>
@@ -821,7 +928,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
           {/* Drag overlay hint */}
           {dragOver && (
             <div className="px-3 pt-2 text-xs text-blue-500 text-center">
-              松开以添加图片
+              {t("chat.dropHint")}
             </div>
           )}
 
@@ -834,7 +941,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
             onCompositionStart={() => { composingRef.current = true; }}
             onCompositionEnd={() => { composingRef.current = false; }}
             onPaste={handlePaste}
-            placeholder="输入消息，粘贴或拖拽图片... (Enter 发送)"
+            placeholder={t("chat.inputPlaceholder")}
             className="w-full resize-none border-0 bg-transparent px-4 py-2.5 text-sm focus:outline-none"
             style={{ maxHeight: 160 }}
             rows={1}
@@ -847,7 +954,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                 onClick={() => fileInputRef.current?.click()}
                 disabled={uploading}
                 className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
-                title="上传图片"
+                title={t("chat.uploadImage")}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -868,7 +975,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
               <button
                 onClick={handleStop}
                 className="p-1.5 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
-                title="停止"
+                title={t("chat.stop")}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="6" y="6" width="12" height="12" rx="2" />
@@ -879,7 +986,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                 onClick={handleSend}
                 disabled={!input.trim() && attachedImages.length === 0}
                 className="p-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                title="发送"
+                title={t("common.send")}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="12" y1="19" x2="12" y2="5"/>

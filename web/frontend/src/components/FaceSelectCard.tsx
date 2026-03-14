@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { getFileUrl } from "../api";
+import { useLang } from "../LanguageContext";
 
 export interface FaceInfo {
   index: number;
@@ -20,6 +21,7 @@ interface Props {
 }
 
 export default function FaceSelectCard({ faces, skippedSmall, skippedBlurry, onConfirm, disabled }: Props) {
+  const { t } = useLang();
   const [selected, setSelected] = useState<Set<number>>(() => new Set(faces.map((f) => f.index)));
   const [confirmed, setConfirmed] = useState(false);
 
@@ -50,7 +52,7 @@ export default function FaceSelectCard({ faces, skippedSmall, skippedBlurry, onC
     return (
       <div className="bg-green-50 border border-green-200 rounded-xl p-3 my-2">
         <div className="text-xs text-green-600 font-medium">
-          {count > 0 ? `已确认风格化 ${count} 张人脸` : "已跳过风格化"}
+          {count > 0 ? t("face.confirmedCount", { count }) : t("face.skipped")}
         </div>
       </div>
     );
@@ -59,16 +61,15 @@ export default function FaceSelectCard({ faces, skippedSmall, skippedBlurry, onC
   return (
     <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 my-2">
       <div className="text-xs text-blue-600 font-medium mb-2">
-        检测到 {faces.length} 张人脸，请选择要风格化的人脸：
+        {t("face.detected", { count: faces.length })}
       </div>
 
       {(skippedSmall > 0 || skippedBlurry > 0) && (
         <div className="text-[10px] text-gray-400 mb-2">
-          已过滤：{skippedSmall > 0 && `${skippedSmall} 张太小`}{skippedSmall > 0 && skippedBlurry > 0 && "、"}{skippedBlurry > 0 && `${skippedBlurry} 张模糊`}
+          {t("face.filtered")}{skippedSmall > 0 && t("face.tooSmall", { count: skippedSmall })}{skippedSmall > 0 && skippedBlurry > 0 && ", "}{skippedBlurry > 0 && t("face.tooBlurry", { count: skippedBlurry })}
         </div>
       )}
 
-      {/* Face grid */}
       <div className="flex flex-wrap gap-2 mb-2">
         {faces.map((face) => {
           const isSelected = selected.has(face.index);
@@ -92,7 +93,7 @@ export default function FaceSelectCard({ faces, skippedSmall, skippedBlurry, onC
                   {face.name}
                 </div>
                 <div className="text-gray-400 text-[10px]">
-                  {face.gender === "M" ? "男" : face.gender === "F" ? "女" : ""}{face.age ? ` ${face.age}岁` : ""}
+                  {face.gender === "M" ? t("face.male") : face.gender === "F" ? t("face.female") : ""}{face.age ? ` ${t("face.age", { age: face.age })}` : ""}
                 </div>
                 {face.description && (
                   <div className="text-gray-400 truncate max-w-[100px] text-[10px]">{face.description}</div>
@@ -108,29 +109,27 @@ export default function FaceSelectCard({ faces, skippedSmall, skippedBlurry, onC
         })}
       </div>
 
-      {/* Quick actions */}
       {faces.length > 1 && (
         <div className="flex gap-2 mb-2">
-          <button onClick={selectAll} className="text-[10px] text-blue-500 hover:underline">全选</button>
-          <button onClick={selectNone} className="text-[10px] text-gray-400 hover:underline">取消全选</button>
+          <button onClick={selectAll} className="text-[10px] text-blue-500 hover:underline">{t("face.selectAll")}</button>
+          <button onClick={selectNone} className="text-[10px] text-gray-400 hover:underline">{t("face.deselectAll")}</button>
         </div>
       )}
 
-      {/* Confirm / Skip */}
       <div className="flex gap-2">
         <button
           onClick={handleConfirm}
           disabled={selected.size === 0 || disabled}
           className="flex-1 py-1.5 bg-blue-500 text-white text-xs font-medium rounded-lg hover:bg-blue-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
-          风格化选中 ({selected.size})
+          {t("face.stylizeSelected")} ({selected.size})
         </button>
         <button
           onClick={handleSkip}
           disabled={disabled}
           className="px-3 py-1.5 bg-gray-100 text-gray-600 text-xs font-medium rounded-lg hover:bg-gray-200 disabled:opacity-30 transition-colors"
         >
-          跳过
+          {t("common.skip")}
         </button>
       </div>
     </div>

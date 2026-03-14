@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Asset } from "../api";
 import { getFileUrl, updateAsset } from "../api";
+import { useLang } from "../LanguageContext";
 
 interface Props {
   asset: Asset;
@@ -10,24 +11,24 @@ interface Props {
   onAssetUpdated?: () => void;
 }
 
-const CATEGORY_LABELS: Record<string, string> = {
-  originals: "原始图片",
-  characters: "角色",
-  faces: "人脸",
-  scenes: "场景",
-  scenes_raw: "场景(原图)",
-  panels: "条漫",
-  scripts: "剧本",
+const CAT_KEYS: Record<string, string> = {
+  originals: "cat.input",
+  characters: "cat.stylized",
+  faces: "cat.faces",
+  scenes: "cat.scenes_stylized",
+  scenes_raw: "cat.scenes_no_people",
+  panels: "cat.panels",
+  scripts: "cat.scripts",
 };
 
 export default function PreviewPanel({ asset, category, onClose, onSendToChat, onAssetUpdated }: Props) {
+  const { t } = useLang();
   const isImage = asset.type === "image";
   const isMarkdown = asset.type === "markdown";
 
   const [editContent, setEditContent] = useState(asset.content || "");
   const [saving, setSaving] = useState(false);
 
-  // Reset content when asset changes
   useEffect(() => {
     setEditContent(asset.content || "");
   }, [asset.path, asset.content]);
@@ -54,9 +55,8 @@ export default function PreviewPanel({ asset, category, onClose, onSendToChat, o
 
   return (
     <div className="w-80 bg-white border-l border-gray-200 flex flex-col h-full">
-      {/* Header */}
       <div className="p-3 border-b border-gray-200 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-gray-700 truncate">预览</h3>
+        <h3 className="text-sm font-semibold text-gray-700 truncate">{t("preview.title")}</h3>
         <button
           onClick={onClose}
           className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
@@ -65,7 +65,6 @@ export default function PreviewPanel({ asset, category, onClose, onSendToChat, o
         </button>
       </div>
 
-      {/* Content */}
       <div className="flex-1 overflow-y-auto p-3">
         {isImage && (
           <div className="flex justify-center bg-gray-50 rounded-lg border border-gray-100 p-2 mb-3">
@@ -89,37 +88,35 @@ export default function PreviewPanel({ asset, category, onClose, onSendToChat, o
           </div>
         )}
 
-        {/* Metadata */}
         <div className="space-y-2">
           <div>
-            <div className="text-[10px] text-gray-400 mb-0.5">文件名</div>
+            <div className="text-[10px] text-gray-400 mb-0.5">{t("preview.filename")}</div>
             <div className="text-xs text-gray-700 break-all">{asset.name}</div>
           </div>
 
           {category && (
             <div>
-              <div className="text-[10px] text-gray-400 mb-0.5">分类</div>
-              <div className="text-xs text-gray-700">{CATEGORY_LABELS[category] || category}</div>
+              <div className="text-[10px] text-gray-400 mb-0.5">{t("preview.category")}</div>
+              <div className="text-xs text-gray-700">{t(CAT_KEYS[category] || category)}</div>
             </div>
           )}
 
           {asset.description && (
             <div>
-              <div className="text-[10px] text-gray-400 mb-0.5">描述</div>
+              <div className="text-[10px] text-gray-400 mb-0.5">{t("preview.description")}</div>
               <div className="text-xs text-gray-700">{asset.description}</div>
             </div>
           )}
 
           {asset.source_face && (
             <div>
-              <div className="text-[10px] text-gray-400 mb-0.5">来源人脸</div>
+              <div className="text-[10px] text-gray-400 mb-0.5">{t("preview.sourceFace")}</div>
               <div className="text-xs text-gray-700">{asset.source_face}</div>
             </div>
           )}
         </div>
       </div>
 
-      {/* Actions */}
       <div className="p-3 border-t border-gray-200 space-y-2">
         {dirty && (
           <div className="flex gap-2">
@@ -127,14 +124,14 @@ export default function PreviewPanel({ asset, category, onClose, onSendToChat, o
               onClick={handleRevert}
               className="flex-1 py-2 bg-gray-100 text-gray-700 text-xs font-medium rounded-lg hover:bg-gray-200 transition-colors"
             >
-              撤销
+              {t("common.revert")}
             </button>
             <button
               onClick={handleSave}
               disabled={saving}
               className="flex-1 py-2 bg-blue-500 text-white text-xs font-medium rounded-lg hover:bg-blue-600 disabled:opacity-50 transition-colors"
             >
-              {saving ? "保存中..." : "保存"}
+              {saving ? t("common.saving") : t("common.save")}
             </button>
           </div>
         )}
@@ -142,7 +139,7 @@ export default function PreviewPanel({ asset, category, onClose, onSendToChat, o
           onClick={onSendToChat}
           className="w-full py-2 bg-blue-500 text-white text-xs font-medium rounded-lg hover:bg-blue-600 transition-colors"
         >
-          发送到聊天
+          {t("preview.sendToChat")}
         </button>
       </div>
     </div>

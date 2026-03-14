@@ -1,24 +1,34 @@
 import { useRef, useState } from "react";
 import type { PlanStep } from "../api";
+import { useLang } from "../LanguageContext";
 
 interface Props {
   steps: PlanStep[];
-  onConfirm: (steps: PlanStep[]) => void;
+  onConfirm: (steps: PlanStep[], autoExecute: boolean) => void;
   onRevise: (prompt: string) => void;
+  onContinue?: (prompt?: string) => void;
+  onCancel?: () => void;
+  paused?: boolean;
   disabled?: boolean;
 }
 
-export default function TaskPlanCard({ steps: initialSteps, onConfirm, onRevise, disabled }: Props) {
-  const [steps, setSteps] = useState<PlanStep[]>(() =>
-    initialSteps.map((s) => ({ ...s, status: s.status || "pending" }))
+export default function TaskPlanCard({ steps: propSteps, onConfirm, onRevise, onContinue, onCancel, paused, disabled }: Props) {
+  const { t } = useLang();
+  // Local state only for the unconfirmed proposal view (checkbox toggling)
+  const [localSteps] = useState<PlanStep[]>(() =>
+    propSteps.map((s) => ({ ...s, status: s.status || "pending" }))
   );
   const [confirmed, setConfirmed] = useState(false);
   const [revising, setRevising] = useState(false);
   const [reviseText, setReviseText] = useState("");
   const composingRef = useRef(false);
 
-  // Track which steps are enabled (not skipped)
-  const [enabled, setEnabled] = useState<Set<number>>(() => new Set(steps.map((s) => s.id)));
+  const [enabled, setEnabled] = useState<Set<number>>(() => new Set(localSteps.map((s) => s.id)));
+  const [autoExec, setAutoExec] = useState(true);
+
+  // In confirmed view, use props (live-updated by parent from SSE events)
+  // In proposal view, use localSteps (user can toggle checkboxes)
+  const steps = confirmed ? propSteps : localSteps;
 
   const toggleStep = (id: number) => {
     setEnabled((prev) => {
@@ -31,12 +41,11 @@ export default function TaskPlanCard({ steps: initialSteps, onConfirm, onRevise,
 
   const handleConfirm = () => {
     setConfirmed(true);
-    const finalSteps = steps.map((s) => ({
+    const finalSteps = localSteps.map((s) => ({
       ...s,
       status: enabled.has(s.id) ? "pending" as const : "skipped" as const,
     }));
-    setSteps(finalSteps);
-    onConfirm(finalSteps);
+    onConfirm(finalSteps, autoExec);
   };
 
   const handleReviseSubmit = () => {
@@ -46,11 +55,23 @@ export default function TaskPlanCard({ steps: initialSteps, onConfirm, onRevise,
     onRevise(text);
   };
 
-  // Confirmed view: show progress
+  const [gateRevising, setGateRevising] = useState(false);
+  const [gateReviseText, setGateReviseText] = useState("");
+  const gateComposingRef = useRef(false);
+
+  const handleGateContinue = () => {
+    const text = gateReviseText.trim();
+    setGateRevising(false);
+    setGateReviseText("");
+    onContinue?.(text || undefined);
+  };
+
   if (confirmed) {
+    const nextPendingStep = steps.find((s) => s.status === "pending");
+
     return (
       <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 my-2">
-        <div className="text-xs font-medium text-gray-600 mb-2">任务计划</div>
+        <div className="text-xs font-medium text-gray-600 mb-2">{t("plan.title")}</div>
         <div className="space-y-1">
           {steps.map((step) => {
             const isSkipped = step.status === "skipped" || !enabled.has(step.id);
@@ -73,20 +94,73 @@ export default function TaskPlanCard({ steps: initialSteps, onConfirm, onRevise,
                   {step.label}
                 </span>
                 {step.needs_confirm && !isSkipped && !isDone && (
-                  <span className="text-[10px] text-blue-400 bg-blue-50 px-1 rounded">需确认</span>
+                  <span className="text-[10px] text-blue-400 bg-blue-50 px-1 rounded">{t("plan.needsConfirm")}</span>
                 )}
               </div>
             );
           })}
         </div>
+
+        {paused && nextPendingStep && (
+          <div className="mt-3 pt-3 border-t border-gray-200">
+            <div className="text-xs text-blue-600 font-medium mb-2">
+              {t("plan.nextStep")}{nextPendingStep.label}
+            </div>
+
+            {gateRevising && (
+              <div className="mb-2 flex gap-2">
+                <input
+                  type="text"
+                  value={gateReviseText}
+                  onChange={(e) => setGateReviseText(e.target.value)}
+                  onCompositionStart={() => { gateComposingRef.current = true; }}
+                  onCompositionEnd={() => { gateComposingRef.current = false; }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !gateComposingRef.current) {
+                      e.preventDefault();
+                      handleGateContinue();
+                    }
+                  }}
+                  placeholder={t("plan.instructionPlaceholder")}
+                  className="flex-1 px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
+                  autoFocus
+                />
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => gateRevising ? handleGateContinue() : onContinue?.()}
+                disabled={disabled}
+                className="flex-1 py-1.5 bg-blue-500 text-white text-xs font-medium rounded-lg hover:bg-blue-600 disabled:opacity-30 transition-colors"
+              >
+                {gateRevising && gateReviseText.trim() ? t("plan.sendAndContinue") : t("plan.continue")}
+              </button>
+              <button
+                onClick={() => { setGateRevising(false); setGateReviseText(""); onCancel?.(); }}
+                disabled={disabled}
+                className="px-3 py-1.5 bg-gray-100 text-gray-600 text-xs font-medium rounded-lg hover:bg-gray-200 disabled:opacity-30 transition-colors"
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                onClick={() => setGateRevising(!gateRevising)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                  gateRevising ? "bg-blue-100 text-blue-600" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                }`}
+              >
+                {t("plan.addInstruction")}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
 
-  // Proposal view: let user toggle steps and confirm
   return (
     <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 my-2">
-      <div className="text-xs font-medium text-blue-600 mb-2">任务计划 — 请确认或调整：</div>
+      <div className="text-xs font-medium text-blue-600 mb-2">{t("plan.proposalTitle")}</div>
       <div className="space-y-1 mb-3">
         {steps.map((step) => {
           const isEnabled = enabled.has(step.id);
@@ -105,14 +179,13 @@ export default function TaskPlanCard({ steps: initialSteps, onConfirm, onRevise,
               </div>
               <span className="text-gray-700">{step.id}. {step.label}</span>
               {step.needs_confirm && (
-                <span className="text-[10px] text-blue-400 bg-blue-50 px-1 rounded ml-auto">需确认</span>
+                <span className="text-[10px] text-blue-400 bg-blue-50 px-1 rounded ml-auto">{t("plan.needsConfirm")}</span>
               )}
             </button>
           );
         })}
       </div>
 
-      {/* Revise input */}
       {revising && (
         <div className="mb-3 flex gap-2">
           <input
@@ -127,7 +200,7 @@ export default function TaskPlanCard({ steps: initialSteps, onConfirm, onRevise,
                 handleReviseSubmit();
               }
             }}
-            placeholder="输入修改指令，例如：不需要写剧本，直接生成..."
+            placeholder={t("plan.revisePlaceholder")}
             className="flex-1 px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
             autoFocus
           />
@@ -136,27 +209,35 @@ export default function TaskPlanCard({ steps: initialSteps, onConfirm, onRevise,
             disabled={!reviseText.trim()}
             className="px-3 py-1.5 bg-blue-500 text-white text-xs font-medium rounded-lg hover:bg-blue-600 disabled:opacity-30 transition-colors"
           >
-            发送
+            {t("common.send")}
           </button>
         </div>
       )}
 
-      {/* Actions */}
-      <div className="flex gap-2">
+      <div className="flex gap-2 items-center">
         <button
           onClick={handleConfirm}
           disabled={enabled.size === 0 || disabled}
           className="flex-1 py-1.5 bg-blue-500 text-white text-xs font-medium rounded-lg hover:bg-blue-600 disabled:opacity-30 transition-colors"
         >
-          开始执行 ({enabled.size} 步)
+          {t("plan.execute")} ({enabled.size} {t("plan.steps")})
         </button>
+        <label className="flex items-center gap-1 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={autoExec}
+            onChange={(e) => setAutoExec(e.target.checked)}
+            className="w-3.5 h-3.5 rounded border-gray-300 text-blue-500 focus:ring-blue-400"
+          />
+          <span className="text-[10px] text-gray-500 whitespace-nowrap">{t("plan.autoExecute")}</span>
+        </label>
         <button
           onClick={() => setRevising(!revising)}
           className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
             revising ? "bg-blue-100 text-blue-600" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
           }`}
         >
-          修改计划
+          {t("plan.modifyPlan")}
         </button>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { CharacterOption } from "../api";
 import { getFileUrl } from "../api";
+import { useLang } from "../LanguageContext";
 
 interface Props {
   options: CharacterOption[];
@@ -8,7 +9,6 @@ interface Props {
   disabled?: boolean;
 }
 
-/** Group characters by source_face, ungrouped items go under "__none__". */
 function groupByFace(items: CharacterOption[]) {
   const groups: Record<string, CharacterOption[]> = {};
   for (const opt of items) {
@@ -19,6 +19,7 @@ function groupByFace(items: CharacterOption[]) {
 }
 
 export default function CharacterSelectCard({ options, onConfirm, disabled }: Props) {
+  const { t } = useLang();
   const [slots, setSlots] = useState<CharacterOption[]>(() =>
     options.filter((o) => o.selected)
   );
@@ -53,7 +54,6 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
 
   const available = options.filter((o) => !selectedPaths.has(o.path));
 
-  // Find the face option for a given source_face filename
   const faceByFilename = useMemo(() => {
     const map: Record<string, CharacterOption> = {};
     for (const o of options) {
@@ -64,7 +64,6 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
     return map;
   }, [options]);
 
-  // Group available characters by source_face
   const availableChars = available.filter((o) => o.category === "characters");
   const availableFaces = available.filter((o) => o.category === "faces");
   const charGroups = useMemo(() => groupByFace(availableChars), [availableChars]);
@@ -73,7 +72,7 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
     return (
       <div className="bg-green-50 border border-green-200 rounded-xl p-3 my-2">
         <div className="text-xs text-green-600 font-medium mb-2">
-          已确认 {slots.length} 个角色
+          {t("char.confirmed", { count: slots.length })}
         </div>
         <div className="flex flex-wrap gap-2">
           {slots.map((opt) => (
@@ -117,7 +116,6 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
 
     return (
       <div className="bg-white rounded-lg border border-gray-200 p-2 mt-2 max-h-56 overflow-y-auto">
-        {/* Grouped characters (by face) */}
         {groupKeys.map((faceFile) => {
           const faceOpt = faceByFilename[faceFile];
           const chars = charGroups[faceFile];
@@ -129,7 +127,7 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
                 )}
                 <div className="text-[10px] text-gray-500 font-medium">
                   {faceOpt?.name || faceFile}
-                  <span className="text-gray-400 ml-1">({chars.length} 个造型)</span>
+                  <span className="text-gray-400 ml-1">({t("char.variants", { count: chars.length })})</span>
                 </div>
               </div>
               <div className="flex flex-wrap gap-1.5 ml-6">
@@ -139,20 +137,18 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
           );
         })}
 
-        {/* Ungrouped characters */}
         {ungrouped.length > 0 && (
           <div className="mb-2">
-            <div className="text-[10px] text-gray-400 mb-1">角色素材</div>
+            <div className="text-[10px] text-gray-400 mb-1">{t("char.characters")}</div>
             <div className="flex flex-wrap gap-1.5">
               {ungrouped.map((opt) => renderOptionButton(opt))}
             </div>
           </div>
         )}
 
-        {/* Available faces */}
         {availableFaces.length > 0 && (
           <div>
-            <div className="text-[10px] text-gray-400 mb-1">人脸素材</div>
+            <div className="text-[10px] text-gray-400 mb-1">{t("char.faces")}</div>
             <div className="flex flex-wrap gap-1.5">
               {availableFaces.map((opt) => renderOptionButton(opt, false))}
             </div>
@@ -160,7 +156,7 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
         )}
 
         {available.length === 0 && (
-          <div className="text-xs text-gray-400 text-center py-2">没有更多素材</div>
+          <div className="text-xs text-gray-400 text-center py-2">{t("char.noMore")}</div>
         )}
       </div>
     );
@@ -169,10 +165,9 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
   return (
     <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 my-2">
       <div className="text-xs text-blue-600 font-medium mb-2">
-        请确认要使用的角色（点击角色可替换）：
+        {t("char.instruction")}
       </div>
 
-      {/* Character slots */}
       <div className="flex flex-wrap gap-2 mb-2">
         {slots.map((opt, i) => (
           <div key={`${opt.path}-${i}`} className="relative group">
@@ -190,7 +185,7 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
                   {opt.label || opt.name}
                 </div>
                 <div className="text-gray-400 truncate max-w-[100px]">
-                  {opt.category === "characters" ? "角色" : "人脸"}
+                  {opt.category === "characters" ? t("char.categoryChar") : t("char.categoryFace")}
                 </div>
               </div>
             </button>
@@ -203,7 +198,6 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
           </div>
         ))}
 
-        {/* Add new slot button */}
         {available.length > 0 && (
           <button
             onClick={() => setPickingSlot(pickingSlot === slots.length ? null : slots.length)}
@@ -214,21 +208,19 @@ export default function CharacterSelectCard({ options, onConfirm, disabled }: Pr
             }`}
           >
             <span className="text-lg leading-none">+</span>
-            <span className="text-xs">添加</span>
+            <span className="text-xs">{t("common.add")}</span>
           </button>
         )}
       </div>
 
-      {/* Picker panel */}
       {pickingSlot !== null && renderPicker()}
 
-      {/* Confirm button */}
       <button
         onClick={handleConfirm}
         disabled={slots.length === 0 || disabled}
         className="w-full mt-2 py-1.5 bg-blue-500 text-white text-xs font-medium rounded-lg hover:bg-blue-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
       >
-        确认选择 ({slots.length})
+        {t("char.confirmSelection")} ({slots.length})
       </button>
     </div>
   );
