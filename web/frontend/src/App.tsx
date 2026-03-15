@@ -4,7 +4,7 @@ import ChatPanel from "./components/ChatPanel";
 import PreviewPanel from "./components/PreviewPanel";
 import ProjectSelector from "./components/ProjectSelector";
 import type { Asset, Assets, AttachedImage, Project } from "./api";
-import { fetchAssets, fetchProjects, createProject, deleteProject } from "./api";
+import { fetchAssets, fetchProjects, createProject, deleteProject, renameProject } from "./api";
 import { LanguageProvider, useLang } from "./LanguageContext";
 
 interface PreviewInfo {
@@ -19,6 +19,7 @@ function AppInner() {
   const [assets, setAssets] = useState<Assets>({});
   const [pendingAssets, setPendingAssets] = useState<AttachedImage[]>([]);
   const [preview, setPreview] = useState<PreviewInfo | null>(null);
+  const [assetsLoading, setAssetsLoading] = useState(false);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -38,11 +39,14 @@ function AppInner() {
       setAssets({});
       return;
     }
+    setAssetsLoading(true);
     try {
       const data = await fetchAssets(currentProject);
       setAssets(data);
     } catch (err) {
       console.error("Failed to load assets:", err);
+    } finally {
+      setAssetsLoading(false);
     }
   }, [currentProject]);
 
@@ -54,6 +58,14 @@ function AppInner() {
     await createProject(name);
     await loadProjects();
     setCurrentProject(name);
+  };
+
+  const handleRenameProject = async (oldName: string, newName: string) => {
+    const res = await renameProject(oldName, newName);
+    if (res.renamed && res.new_name) {
+      setCurrentProject(res.new_name);
+      await loadProjects();
+    }
   };
 
   const handleDeleteProject = async (name: string) => {
@@ -115,6 +127,7 @@ function AppInner() {
             projects={projects}
             current={currentProject}
             onSelect={setCurrentProject}
+            onRename={handleRenameProject}
             onCreate={handleCreateProject}
             onDelete={handleDeleteProject}
           />
@@ -129,6 +142,7 @@ function AppInner() {
       <div className="flex flex-1 min-h-0">
         <AssetSidebar
           assets={assets}
+          loading={assetsLoading}
           onRefresh={loadAssets}
           onAssetClick={handleAssetClick}
         />

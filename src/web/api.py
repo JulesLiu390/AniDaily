@@ -137,6 +137,23 @@ def create_project(req: ProjectCreate) -> dict:
     return {"name": proj_dir.name, "created": True}
 
 
+class ProjectRename(BaseModel):
+    new_name: str
+
+
+@app.put("/api/projects/{name}")
+def rename_project(name: str, req: ProjectRename) -> dict:
+    """重命名项目。"""
+    old_dir = _project_path(name)
+    if not old_dir.exists():
+        return {"renamed": False, "error": "项目不存在"}
+    new_dir = _project_path(req.new_name)
+    if new_dir.exists():
+        return {"renamed": False, "error": "目标名称已存在"}
+    old_dir.rename(new_dir)
+    return {"renamed": True, "old_name": name, "new_name": new_dir.name}
+
+
 @app.delete("/api/projects/{name}")
 def delete_project(name: str) -> dict:
     """删除项目。"""

@@ -69,9 +69,22 @@ export default function TaskPlanCard({ steps: propSteps, onConfirm, onRevise, on
   if (confirmed) {
     const nextPendingStep = steps.find((s) => s.status === "pending");
 
+    const totalActive = steps.filter((s) => s.status !== "skipped" && enabled.has(s.id)).length;
+    const doneCount = steps.filter((s) => s.status === "done" && enabled.has(s.id)).length;
+    const progress = totalActive > 0 ? Math.round((doneCount / totalActive) * 100) : 0;
+
     return (
       <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 my-2">
-        <div className="text-xs font-medium text-gray-600 mb-2">{t("plan.title")}</div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs font-medium text-gray-600">{t("plan.title")}</div>
+          <div className="text-[10px] text-gray-400">{doneCount}/{totalActive}</div>
+        </div>
+        <div className="w-full h-1.5 bg-gray-200 rounded-full mb-2 overflow-hidden">
+          <div
+            className="h-full bg-blue-500 rounded-full transition-all duration-500"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
         <div className="space-y-1">
           {steps.map((step) => {
             const isSkipped = step.status === "skipped" || !enabled.has(step.id);

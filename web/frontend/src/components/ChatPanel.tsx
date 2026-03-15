@@ -779,10 +779,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
           onDelete={handleDeleteConversation}
           onRefresh={loadConversations}
         />
-        <div className="flex items-center gap-2">
-          <ModeSelector mode={mode} onChange={setMode} disabled={loading} />
-          <InteractionModeSelector mode={interactionMode} onChange={setInteractionMode} disabled={loading} />
-        </div>
+        <div className="flex items-center gap-2" />
       </div>
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -1077,7 +1074,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
 
           {/* Bottom toolbar */}
           <div className="flex items-center justify-between px-2 pb-2">
-            <div className="flex items-center space-x-1">
+            <div className="flex items-center gap-1.5">
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={uploading}
@@ -1098,6 +1095,9 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                 onChange={handleFileSelect}
                 className="hidden"
               />
+              <div className="h-4 w-px bg-gray-200" />
+              <ModeSelector mode={mode} onChange={setMode} disabled={loading} />
+              <InteractionModeSelector mode={interactionMode} onChange={setInteractionMode} disabled={loading} />
             </div>
             {loading ? (
               <button

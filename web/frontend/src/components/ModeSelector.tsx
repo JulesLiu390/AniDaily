@@ -9,14 +9,14 @@ interface Props {
 export default function ModeSelector({ mode, onChange, disabled }: Props) {
   const { t } = useLang();
   return (
-    <div className="flex items-center bg-gray-100 rounded-lg p-0.5 text-xs">
+    <div className="flex items-center bg-gray-100 rounded-md p-0.5 text-[11px]">
       <button
         onClick={() => onChange("comic")}
         disabled={disabled}
-        className={`px-2.5 py-1 rounded-md transition-colors ${
+        className={`px-2 py-0.5 rounded transition-colors ${
           mode === "comic"
             ? "bg-white text-gray-800 shadow-sm font-medium"
-            : "text-gray-500 hover:text-gray-700"
+            : "text-gray-400 hover:text-gray-600"
         } disabled:opacity-50`}
       >
         {t("mode.comic")}
@@ -24,10 +24,10 @@ export default function ModeSelector({ mode, onChange, disabled }: Props) {
       <button
         onClick={() => onChange("storyboard")}
         disabled={disabled}
-        className={`px-2.5 py-1 rounded-md transition-colors ${
+        className={`px-2 py-0.5 rounded transition-colors ${
           mode === "storyboard"
             ? "bg-white text-gray-800 shadow-sm font-medium"
-            : "text-gray-500 hover:text-gray-700"
+            : "text-gray-400 hover:text-gray-600"
         } disabled:opacity-50`}
       >
         {t("mode.storyboard")}

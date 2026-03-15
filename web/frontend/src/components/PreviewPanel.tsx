@@ -35,9 +35,11 @@ export default function PreviewPanel({ asset, category, onClose, onSendToChat, o
 
   const [editContent, setEditContent] = useState(asset.content || "");
   const [saving, setSaving] = useState(false);
+  const [mdPreview, setMdPreview] = useState(false);
 
   useEffect(() => {
     setEditContent(asset.content || "");
+    setMdPreview(false);
   }, [asset.path, asset.content]);
 
   const dirty = isMarkdown && editContent !== (asset.content || "");
@@ -96,13 +98,40 @@ export default function PreviewPanel({ asset, category, onClose, onSendToChat, o
 
         {isMarkdown && (
           <div className="mb-3">
-            <textarea
-              value={editContent}
-              onChange={(e) => setEditContent(e.target.value)}
-              className={`w-full h-[40vh] bg-gray-50 rounded-lg border p-3 text-xs text-gray-700 font-mono resize-none focus:outline-none focus:ring-1 focus:ring-blue-400 ${
-                dirty ? "border-blue-300" : "border-gray-100"
-              }`}
-            />
+            <div className="flex gap-1 mb-1.5">
+              <button
+                onClick={() => setMdPreview(false)}
+                className={`px-2 py-0.5 text-[10px] font-medium rounded transition-colors ${!mdPreview ? "bg-blue-500 text-white" : "bg-gray-100 text-gray-500 hover:bg-gray-200"}`}
+              >
+                {t("preview.edit")}
+              </button>
+              <button
+                onClick={() => setMdPreview(true)}
+                className={`px-2 py-0.5 text-[10px] font-medium rounded transition-colors ${mdPreview ? "bg-blue-500 text-white" : "bg-gray-100 text-gray-500 hover:bg-gray-200"}`}
+              >
+                {t("preview.preview")}
+              </button>
+            </div>
+            {mdPreview ? (
+              <div className="w-full h-[40vh] bg-gray-50 rounded-lg border border-gray-100 p-3 text-xs text-gray-700 overflow-auto whitespace-pre-wrap">
+                {editContent.split("\n").map((line, i) => {
+                  if (line.startsWith("### ")) return <h3 key={i} className="text-sm font-semibold mt-2 mb-1">{line.slice(4)}</h3>;
+                  if (line.startsWith("## ")) return <h2 key={i} className="text-base font-semibold mt-3 mb-1">{line.slice(3)}</h2>;
+                  if (line.startsWith("# ")) return <h1 key={i} className="text-lg font-bold mt-3 mb-1">{line.slice(2)}</h1>;
+                  if (line.startsWith("- ")) return <div key={i} className="pl-3">• {line.slice(2)}</div>;
+                  if (line.trim() === "") return <div key={i} className="h-2" />;
+                  return <div key={i}>{line}</div>;
+                })}
+              </div>
+            ) : (
+              <textarea
+                value={editContent}
+                onChange={(e) => setEditContent(e.target.value)}
+                className={`w-full h-[40vh] bg-gray-50 rounded-lg border p-3 text-xs text-gray-700 font-mono resize-none focus:outline-none focus:ring-1 focus:ring-blue-400 ${
+                  dirty ? "border-blue-300" : "border-gray-100"
+                }`}
+              />
+            )}
           </div>
         )}
 

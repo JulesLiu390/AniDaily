@@ -86,6 +86,15 @@ export async function createProject(name: string): Promise<{ name: string; creat
   return res.json();
 }
 
+export async function renameProject(name: string, newName: string): Promise<{ renamed: boolean; new_name?: string }> {
+  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ new_name: newName }),
+  });
+  return res.json();
+}
+
 export async function deleteProject(name: string): Promise<{ deleted: boolean }> {
   const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(name)}`, {
     method: "DELETE",

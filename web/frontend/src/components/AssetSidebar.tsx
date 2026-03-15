@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Assets } from "../api";
 import { getFileUrl, deleteAsset } from "../api";
 import { useLang } from "../LanguageContext";
+import ConfirmDialog from "./ConfirmDialog";
 
 const CAT_KEYS: Record<string, string> = {
   style: "cat.style",
@@ -21,11 +22,12 @@ const CAT_KEYS: Record<string, string> = {
 
 interface Props {
   assets: Assets;
+  loading?: boolean;
   onAssetClick?: (path: string) => void;
   onRefresh?: () => void;
 }
 
-export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props) {
+export default function AssetSidebar({ assets, loading, onAssetClick, onRefresh }: Props) {
   const { t } = useLang();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
@@ -43,14 +45,17 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
     return na - nb;
   };
 
-  const handleDelete = async (name: string, path: string) => {
-    if (!confirm(t("sidebar.deleteConfirm", { name }))) return;
+  const [deleteTarget, setDeleteTarget] = useState<{ name: string; path: string } | null>(null);
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return;
     try {
-      await deleteAsset(path);
+      await deleteAsset(deleteTarget.path);
       onRefresh?.();
     } catch (err) {
       console.error("Delete failed:", err);
     }
+    setDeleteTarget(null);
   };
 
   return (
@@ -67,7 +72,12 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
         )}
       </div>
       <div className="flex-1 overflow-y-auto">
-        {Object.entries(assets).map(([category, items]) => (
+        {loading && (
+          <div className="flex items-center justify-center py-8">
+            <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+          </div>
+        )}
+        {!loading && Object.entries(assets).map(([category, items]) => (
           <div key={category} className="border-b border-gray-100">
             <button
               onClick={() => toggleCategory(category)}
@@ -89,7 +99,7 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleDelete(item.name, item.path);
+                        setDeleteTarget({ name: item.name, path: item.path });
                       }}
                       className="absolute -top-1 -right-1 z-10 w-4 h-4 bg-gray-500 text-white rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-red-500"
                     >
@@ -118,7 +128,7 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleDelete(item.name, item.path);
+                          setDeleteTarget({ name: item.name, path: item.path });
                         }}
                         className="absolute -top-1 -right-1 z-10 w-4 h-4 bg-gray-500 text-white rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-red-500"
                       >
@@ -142,17 +152,17 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleDelete(item.name, item.path);
+                          setDeleteTarget({ name: item.name, path: item.path });
                         }}
                         className="absolute -top-1 -right-1 z-10 w-4 h-4 bg-gray-500 text-white rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-red-500"
                       >
                         ×
                       </button>
-                      <div className="w-full aspect-video bg-gray-900 rounded border border-gray-200 group-hover:border-blue-400 transition-colors flex items-center justify-center">
-                        <span className="text-white text-lg">&#9654;</span>
-                      </div>
-                      <div className="text-[10px] text-gray-500 truncate mt-0.5 text-center">
-                        {item.name}
+                      <div className="w-full aspect-video bg-gradient-to-br from-gray-800 to-gray-900 rounded border border-gray-200 group-hover:border-blue-400 transition-colors flex flex-col items-center justify-center gap-1">
+                        <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" />
+                        </svg>
+                        <span className="text-[9px] text-gray-400 truncate max-w-full px-1">{item.name}</span>
                       </div>
                     </div>
                   ) : (
@@ -164,7 +174,7 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleDelete(item.name, item.path);
+                          setDeleteTarget({ name: item.name, path: item.path });
                         }}
                         className="absolute top-1 right-1 w-4 h-4 bg-gray-500 text-white rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-red-500"
                       >
@@ -179,6 +189,13 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
           </div>
         ))}
       </div>
+      {deleteTarget && (
+        <ConfirmDialog
+          message={t("sidebar.deleteConfirm", { name: deleteTarget.name })}
+          onConfirm={handleDeleteConfirm}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
     </div>
   );
 }

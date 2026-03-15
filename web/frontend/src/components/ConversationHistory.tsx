@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import type { Conversation } from "../api";
 import { useLang } from "../LanguageContext";
+import ConfirmDialog from "./ConfirmDialog";
 
 interface Props {
   conversations: Conversation[];
@@ -69,6 +70,7 @@ export default function ConversationHistory({
   const { t } = useLang();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [deleteId, setDeleteId] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -196,7 +198,7 @@ export default function ConversationHistory({
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              onDelete(conv.id);
+                              setDeleteId(conv.id);
                             }}
                             className="p-0.5 text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
                             title={t("history.delete")}
@@ -214,6 +216,13 @@ export default function ConversationHistory({
             )}
           </div>
         </div>
+      )}
+      {deleteId && (
+        <ConfirmDialog
+          message={t("history.deleteConfirm")}
+          onConfirm={() => { onDelete(deleteId); setDeleteId(null); }}
+          onCancel={() => setDeleteId(null)}
+        />
       )}
     </div>
   );

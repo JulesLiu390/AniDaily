@@ -17,16 +17,16 @@ export default function InteractionModeSelector({ mode, onChange, disabled }: Pr
   ];
 
   return (
-    <div className="flex items-center bg-gray-100 rounded-lg p-0.5 text-xs">
+    <div className="flex items-center bg-gray-100 rounded-md p-0.5 text-[11px]">
       {options.map((opt) => (
         <button
           key={opt.value}
           onClick={() => onChange(opt.value)}
           disabled={disabled}
-          className={`px-2.5 py-1 rounded-md transition-colors ${
+          className={`px-2 py-0.5 rounded transition-colors ${
             mode === opt.value
               ? "bg-white text-gray-800 shadow-sm font-medium"
-              : "text-gray-500 hover:text-gray-700"
+              : "text-gray-400 hover:text-gray-600"
           } disabled:opacity-50`}
         >
           {opt.label}

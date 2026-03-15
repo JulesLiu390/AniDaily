@@ -27,6 +27,9 @@ const translations: Record<string, Record<Lang, string>> = {
   "project.deleteTitle": { zh: "删除项目", en: "Delete project" },
   "project.namePlaceholder": { zh: "项目名称", en: "Project name" },
   "project.createNew": { zh: "+ 新建", en: "+ New" },
+  "project.rename": { zh: "改名", en: "Rename" },
+  "project.recent": { zh: "最近", en: "Recent" },
+  "project.all": { zh: "全部", en: "All" },
 
   // ========== Chat Panel ==========
   "chat.appName": { zh: "AniDaily", en: "AniDaily" },
@@ -100,6 +103,8 @@ const translations: Record<string, Record<Lang, string>> = {
   "preview.description": { zh: "描述", en: "Description" },
   "preview.sourceFace": { zh: "来源人脸", en: "Source face" },
   "preview.sendToChat": { zh: "发送到聊天", en: "Send to chat" },
+  "preview.edit": { zh: "编辑", en: "Edit" },
+  "preview.preview": { zh: "预览", en: "Preview" },
 
   // ========== Conversation History ==========
   "history.title": { zh: "对话记录", en: "Sessions" },
@@ -108,6 +113,7 @@ const translations: Record<string, Record<Lang, string>> = {
   "history.noHistory": { zh: "暂无对话记录", en: "No sessions yet" },
   "history.untitled": { zh: "新对话", en: "New Chat" },
   "history.delete": { zh: "删除", en: "Delete" },
+  "history.deleteConfirm": { zh: "确定删除这条对话记录？", en: "Delete this conversation?" },
   "history.messages": { zh: "{count} 条消息", en: "{count} messages" },
   "history.today": { zh: "今天", en: "Today" },
   "history.yesterday": { zh: "昨天", en: "Yesterday" },
