@@ -88,6 +88,10 @@ def _asset_dirs(project: str) -> dict[str, Path]:
         "scenes": output / "scenes" / "stylized",
         "scenes_raw": output / "scenes" / "no_people",
         "panels": output / "panels",
+        "videos": output / "videos",
+        "storyboard_frames": output / "storyboards" / "frames",
+        "storyboards": output / "storyboards",
+        "clip_scripts": output / "storyboards" / "clip_scripts",
         "scripts": output / "scripts",
     }
 
@@ -176,6 +180,7 @@ def list_assets(project: str) -> dict[str, list[dict]]:
                         item["content"] = f.read_text(encoding="utf-8")
                     elif f.suffix.lower() == ".json":
                         item["type"] = "json"
+                        item["content"] = f.read_text(encoding="utf-8")
                     # 附加 assets.json 元数据
                     file_meta = meta.get(f.name)
                     if file_meta:
@@ -272,18 +277,22 @@ class ChatRequest(BaseModel):
     plan_steps: list[dict] | None = None  # steps for "confirm"
     plan_prompt: str | None = None        # extra instruction for "continue"
     plan_auto: bool = True               # auto-execute (only pause at interactive steps)
+    mode: str = "comic"                  # "comic" | "storyboard"
+    interaction_mode: str = "plan"       # "ask" | "edit" | "plan"
 
 
 # 对话 agent 实例管理
 _agents: dict[str, Agent] = {}
 
 
-def _get_agent(conversation_id: str | None, project: str | None = None, lang: str = "zh") -> tuple[str, Agent]:
+def _get_agent(conversation_id: str | None, project: str | None = None, lang: str = "zh", mode: str = "comic", interaction_mode: str = "plan") -> tuple[str, Agent]:
     """获取或创建对话 agent，优先从内存取，其次从 DB 恢复历史。"""
     # 1. In-memory hit
     if conversation_id and conversation_id in _agents:
         agent = _agents[conversation_id]
         agent.lang = lang
+        agent.mode = mode
+        agent.interaction_mode = interaction_mode
         return conversation_id, agent
 
     # 2. DB restore
@@ -292,16 +301,16 @@ def _get_agent(conversation_id: str | None, project: str | None = None, lang: st
         if history_dicts:
             history = [dict_to_content(d) for d in history_dicts]
             project_dir = _project_path(project) if project else None
-            agent = Agent(project_dir=project_dir, lang=lang, history=history)
+            agent = Agent(project_dir=project_dir, lang=lang, history=history, mode=mode, interaction_mode=interaction_mode)
             _agents[conversation_id] = agent
-            logger.info(f"Restored agent {conversation_id} with {len(history)} history entries")
+            logger.info(f"Restored agent {conversation_id} with {len(history)} history entries (mode={mode})")
             return conversation_id, agent
 
     # 3. Brand new conversation
     project_name = project or "default"
     cid = db.create_conversation(project_name, lang)
     project_dir = _project_path(project) if project else None
-    agent = Agent(project_dir=project_dir, lang=lang)
+    agent = Agent(project_dir=project_dir, lang=lang, mode=mode, interaction_mode=interaction_mode)
     _agents[cid] = agent
     return cid, agent
 
@@ -349,7 +358,7 @@ async def _stream_chat(agent: Agent, cid: str, message: str, image_paths: list[s
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     """SSE 流式对话接口。"""
-    cid, agent = _get_agent(req.conversation_id, req.project, req.lang or "zh")
+    cid, agent = _get_agent(req.conversation_id, req.project, req.lang or "zh", req.mode, req.interaction_mode)
 
     # Handle plan actions
     if req.plan_action == "confirm" and req.plan_steps:

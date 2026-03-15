@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { Assets } from "../api";
 import { getFileUrl, deleteAsset } from "../api";
 import { useLang } from "../LanguageContext";
@@ -10,6 +11,10 @@ const CAT_KEYS: Record<string, string> = {
   scenes: "cat.scenes_stylized",
   scenes_raw: "cat.scenes_no_people",
   panels: "cat.panels",
+  videos: "cat.videos",
+  storyboard_frames: "cat.storyboard_frames",
+  storyboards: "cat.storyboards",
+  clip_scripts: "cat.clip_scripts",
   scripts: "cat.scripts",
 };
 
@@ -21,6 +26,11 @@ interface Props {
 
 export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props) {
   const { t } = useLang();
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
+  const toggleCategory = (category: string) => {
+    setCollapsed((prev) => ({ ...prev, [category]: !prev[category] }));
+  };
 
   const handleDelete = async (name: string, path: string) => {
     if (!confirm(t("sidebar.deleteConfirm", { name }))) return;
@@ -48,10 +58,14 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
       <div className="flex-1 overflow-y-auto">
         {Object.entries(assets).map(([category, items]) => (
           <div key={category} className="border-b border-gray-100">
-            <div className="px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wide bg-gray-50">
-              {t(CAT_KEYS[category] || category)} ({items.length})
-            </div>
-            {items.length === 0 ? (
+            <button
+              onClick={() => toggleCategory(category)}
+              className="w-full px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wide bg-gray-50 flex items-center justify-between hover:bg-gray-100 transition-colors"
+            >
+              <span>{t(CAT_KEYS[category] || category)} ({items.length})</span>
+              <span className={`text-[10px] transition-transform ${collapsed[category] ? "" : "rotate-90"}`}>▶</span>
+            </button>
+            {!collapsed[category] && (items.length === 0 ? (
               <div className="px-3 py-2 text-xs text-gray-400">{t("sidebar.empty")}</div>
             ) : (
               <div className="p-2 grid grid-cols-2 gap-1.5">
@@ -100,7 +114,7 @@ export default function AssetSidebar({ assets, onAssetClick, onRefresh }: Props)
                   )
                 )}
               </div>
-            )}
+            ))}
           </div>
         ))}
       </div>

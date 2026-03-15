@@ -18,6 +18,10 @@ const CAT_KEYS: Record<string, string> = {
   scenes: "cat.scenes_stylized",
   scenes_raw: "cat.scenes_no_people",
   panels: "cat.panels",
+  videos: "cat.videos",
+  storyboard_frames: "cat.storyboard_frames",
+  storyboards: "cat.storyboards",
+  clip_scripts: "cat.clip_scripts",
   scripts: "cat.scripts",
 };
 
@@ -25,6 +29,7 @@ export default function PreviewPanel({ asset, category, onClose, onSendToChat, o
   const { t } = useLang();
   const isImage = asset.type === "image";
   const isMarkdown = asset.type === "markdown";
+  const isJson = asset.type === "json";
 
   const [editContent, setEditContent] = useState(asset.content || "");
   const [saving, setSaving] = useState(false);
@@ -85,6 +90,14 @@ export default function PreviewPanel({ asset, category, onClose, onSendToChat, o
                 dirty ? "border-blue-300" : "border-gray-100"
               }`}
             />
+          </div>
+        )}
+
+        {isJson && asset.content && (
+          <div className="mb-3">
+            <pre className="w-full h-[40vh] bg-gray-50 rounded-lg border border-gray-100 p-3 text-xs text-gray-700 font-mono overflow-auto whitespace-pre-wrap">
+              {(() => { try { return JSON.stringify(JSON.parse(asset.content), null, 2); } catch { return asset.content; } })()}
+            </pre>
           </div>
         )}
 

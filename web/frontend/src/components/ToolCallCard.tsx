@@ -131,6 +131,18 @@ export default function ToolCallCard({ toolCall, onAccept, onReject, onRevise }:
         </div>
       )}
 
+      {/* Video preview for generated clips */}
+      {toolCall.tool === "generate_video_clip" && typeof toolCall.result?.output_path === "string" && (
+        <div className="px-3 pb-2">
+          <video
+            src={getFileUrl(`/files/${toolCall.result.output_path.replace(/^.*?projects\//, 'projects/')}`)}
+            controls
+            className="max-w-full rounded-lg"
+            style={{ maxHeight: 300 }}
+          />
+        </div>
+      )}
+
       {showActions && (
         <div className="px-3 pb-2">
           {verdict === "pending" && (

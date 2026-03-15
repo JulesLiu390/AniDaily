@@ -31,7 +31,9 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 # ========== Tool 定义 ==========
 
-TOOL_DECLARATIONS = [
+# ========== Shared tools (both modes) ==========
+
+_SHARED_TOOLS = [
     FunctionDeclaration(
         name="detect_faces_in_image",
         description="检测图片中的所有人脸，返回人脸列表（bbox、age、gender）并裁剪保存。",
@@ -73,7 +75,7 @@ TOOL_DECLARATIONS = [
     ),
     FunctionDeclaration(
         name="generate_asset",
-        description="凭空生成新素材（新角色、新场景等）。生成角色时请输出到 stylized 目录，会自动应用角色设计约束（9:16全身白底彩色动画风）。",
+        description="凭空生成新素材（新角色、新场景等）。输出到 stylized 目录会自动应用角色约束（9:16全身白底）；输出到 scenes 目录会自动应用场景约束（16:9横屏、空无一人的纯背景）。",
         parameters=Schema(
             type=Type.OBJECT,
             properties={
@@ -86,34 +88,6 @@ TOOL_DECLARATIONS = [
                 ),
             },
             required=["prompt", "output_path"],
-        ),
-    ),
-    FunctionDeclaration(
-        name="generate_comic_strip",
-        description=(
-            "生成一条竖向条漫（4-6格）。每次调用生成一条，可多次调用生成多条。"
-            "必须传入角色素材图片路径（stylized目录下）和本条的剧本内容。"
-            "输出一张 9:16 竖向条漫图片，包含分格、对话气泡和黑色分格边框。"
-        ),
-        parameters=Schema(
-            type=Type.OBJECT,
-            properties={
-                "character_paths": Schema(
-                    type=Type.ARRAY,
-                    items=Schema(type=Type.STRING),
-                    description="角色图片路径列表（必须是 stylized 目录下的角色图）",
-                ),
-                "character_names": Schema(
-                    type=Type.ARRAY,
-                    items=Schema(type=Type.STRING),
-                    description="角色名称列表，与 character_paths 一一对应，如 ['Jules', 'Peize']",
-                ),
-                "script": Schema(type=Type.STRING, description="本条条漫的剧本（4-6格的分格描述、对话、镜头）"),
-                "strip_index": Schema(type=Type.INTEGER, description="条漫编号，从1开始"),
-                "output_path": Schema(type=Type.STRING, description="输出路径"),
-                "scene_path": Schema(type=Type.STRING, description="场景/背景参考图路径（可选）"),
-            },
-            required=["character_paths", "character_names", "script", "strip_index", "output_path"],
         ),
     ),
     FunctionDeclaration(
@@ -264,6 +238,145 @@ TOOL_DECLARATIONS = [
         ),
     ),
 ]
+
+# ========== Comic-only tools ==========
+
+_COMIC_TOOL = FunctionDeclaration(
+    name="generate_comic_strip",
+    description=(
+        "生成一条竖向条漫（4-6格）。每次调用生成一条，可多次调用生成多条。"
+        "必须传入角色素材图片路径（stylized目录下）和本条的剧本内容。"
+        "输出一张 9:16 竖向条漫图片，包含分格、对话气泡和黑色分格边框。"
+    ),
+    parameters=Schema(
+        type=Type.OBJECT,
+        properties={
+            "character_paths": Schema(
+                type=Type.ARRAY,
+                items=Schema(type=Type.STRING),
+                description="角色图片路径列表（必须是 stylized 目录下的角色图）",
+            ),
+            "character_names": Schema(
+                type=Type.ARRAY,
+                items=Schema(type=Type.STRING),
+                description="角色名称列表，与 character_paths 一一对应，如 ['Jules', 'Peize']",
+            ),
+            "script": Schema(type=Type.STRING, description="本条条漫的剧本（4-6格的分格描述、对话、镜头）"),
+            "strip_index": Schema(type=Type.INTEGER, description="条漫编号，从1开始"),
+            "output_path": Schema(type=Type.STRING, description="输出路径"),
+            "scene_path": Schema(type=Type.STRING, description="场景/背景参考图路径（可选）"),
+        },
+        required=["character_paths", "character_names", "script", "strip_index", "output_path"],
+    ),
+)
+
+# ========== Storyboard-only tools ==========
+
+_STORYBOARD_TOOLS_EXTRA = [
+    # Step 2: 生成分镜条漫 → 切割 → 放大
+    FunctionDeclaration(
+        name="generate_storyboard_strip",
+        description=(
+            "【Step 2】生成 4 格分镜条漫并自动切割为 4 张 16:9 首帧。\n"
+            "传入角色素材图 + 每格的画面描述（4 个），内部自动：\n"
+            "1. 生成 9:16 四格无台词条漫（角色参考图保证一致性）\n"
+            "2. 均分切割成 4 张帧\n"
+            "3. 逐帧放大分辨率\n"
+            "4. 裁切到精确 16:9\n"
+            "输出 4 张首帧到指定目录。"
+        ),
+        parameters=Schema(
+            type=Type.OBJECT,
+            properties={
+                "character_paths": Schema(
+                    type=Type.ARRAY,
+                    items=Schema(type=Type.STRING),
+                    description="角色素材图片路径列表（stylized 目录下）",
+                ),
+                "panel_descriptions": Schema(
+                    type=Type.ARRAY,
+                    items=Schema(type=Type.STRING),
+                    description="4 个格子的画面描述（每格对应一个 clip 的首帧画面）",
+                ),
+                "strip_index": Schema(type=Type.INTEGER, description="条漫编号（第几条，从1开始）"),
+                "output_dir": Schema(type=Type.STRING, description="输出目录路径（如 output/storyboards/frames）"),
+            },
+            required=["character_paths", "panel_descriptions", "strip_index", "output_dir"],
+        ),
+    ),
+    # Step 3: 视频生成（首帧 + prompt → image-to-video）
+    FunctionDeclaration(
+        name="generate_video_clip",
+        description=(
+            "【Step 4】基于首帧图片生成 6 秒 16:9 视频（image-to-video）。"
+            "只传 1 张首帧图片。prompt 前 20 词最重要，格式：[动作] + [镜头运动] + [风格]。"
+        ),
+        parameters=Schema(
+            type=Type.OBJECT,
+            properties={
+                "first_frame": Schema(type=Type.STRING, description="首帧图片路径"),
+                "prompt": Schema(type=Type.STRING, description=(
+                    "简短视频动作描述（前 20 词最重要）。"
+                    "例如：「粉色背心女生走向蓝衣男生质问。中景缓慢推近。动画风格。」"
+                )),
+                "clip_index": Schema(type=Type.INTEGER, description="片段编号"),
+                "aspect_ratio": Schema(type=Type.STRING, description="宽高比，默认 '16:9'"),
+                "video_mode": Schema(type=Type.STRING, description="生成模型：'grok'（默认）、'standard'、'fast'、'4k'"),
+            },
+            required=["first_frame", "prompt", "clip_index"],
+        ),
+    ),
+    # Step 5: 合并视频
+    FunctionDeclaration(
+        name="merge_video_clips",
+        description=(
+            "【Step 5】将多个视频 clip 按顺序合并为一个完整视频。单独的 clip 文件保留不删除。"
+        ),
+        parameters=Schema(
+            type=Type.OBJECT,
+            properties={
+                "clip_paths": Schema(
+                    type=Type.ARRAY,
+                    items=Schema(type=Type.STRING),
+                    description="视频 clip 文件路径列表，按播放顺序排列",
+                ),
+                "output_path": Schema(type=Type.STRING, description="合并后的输出视频路径"),
+            },
+            required=["clip_paths", "output_path"],
+        ),
+    ),
+    FunctionDeclaration(
+        name="write_storyboard",
+        description="写入分镜脚本 JSON 文件到 output/storyboards/ 目录。内容为标准分镜 JSON 格式（含 clips/shots 结构）。",
+        parameters=Schema(
+            type=Type.OBJECT,
+            properties={
+                "file_path": Schema(type=Type.STRING, description="JSON 文件路径（如 output/storyboards/xxx.json）"),
+                "content": Schema(type=Type.STRING, description="完整的 JSON 字符串"),
+            },
+            required=["file_path", "content"],
+        ),
+    ),
+    FunctionDeclaration(
+        name="read_storyboard",
+        description="读取分镜脚本 JSON 文件。",
+        parameters=Schema(
+            type=Type.OBJECT,
+            properties={
+                "file_path": Schema(type=Type.STRING, description="JSON 文件路径"),
+            },
+            required=["file_path"],
+        ),
+    ),
+]
+
+# ========== Mode -> tool set mapping ==========
+
+COMIC_TOOLS = _SHARED_TOOLS + [_COMIC_TOOL]
+STORYBOARD_TOOLS = _SHARED_TOOLS + _STORYBOARD_TOOLS_EXTRA
+
+# Backward compat
+TOOL_DECLARATIONS = COMIC_TOOLS
 
 
 # ========== Tool 执行 ==========
@@ -477,9 +590,22 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: 
             out_path = Path(args["output_path"])
             prompt = args["prompt"]
 
-            # 如果输出到 stylized 目录，自动注入角色设计约束（9:16、全身、白色背景、彩色）
-            is_character = "stylized" in out_path.parts
-            if is_character:
+            # 自动注入约束：scenes 优先（scenes/stylized 是场景子目录不是角色目录）
+            is_scene = "scenes" in out_path.parts
+            is_character = not is_scene and "stylized" in out_path.parts
+
+            if is_scene:
+                prompt = (
+                    "Generate a 16:9 LANDSCAPE background scene image for animation/anime.\n\n"
+                    "ABSOLUTE REQUIREMENTS:\n"
+                    "- 16:9 widescreen aspect ratio (landscape orientation)\n"
+                    "- NO people, NO characters, NO figures — this is a PURE BACKGROUND/ENVIRONMENT only\n"
+                    "- Empty scene that will be used as a backdrop for character compositing\n"
+                    "- Anime/animation art style, detailed environment, cinematic lighting\n"
+                    "- Rich atmosphere and depth\n\n"
+                    f"Scene description: {prompt}"
+                )
+            elif is_character:
                 prompt = (
                     CHARACTER_DESIGN_PROMPT.replace(
                         "Transform this person's photo into an anime/illustration style FULL-BODY character design.",
@@ -591,6 +717,213 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: 
             return result_dict
         except Exception as e:
             return {"error": str(e)}
+
+    elif name == "generate_storyboard_strip":
+        from src.mcp_tools.generate_panel import _guess_mime
+        from google.genai.types import GenerateContentConfig as GCC
+        from PIL import Image as PILImage
+
+        char_paths = args.get("character_paths", [])
+        panel_descs = args.get("panel_descriptions", [])
+        strip_index = int(args.get("strip_index", 1))
+        out_dir = Path(args.get("output_dir", "output/storyboards/frames"))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        num_panels = len(panel_descs)
+        if num_panels == 0:
+            return {"error": "panel_descriptions 不能为空"}
+
+        # 1. Build contents: character refs + strip prompt
+        contents: list = []
+        labels = []
+        for i, cp in enumerate(char_paths):
+            p = Path(cp)
+            if not p.exists():
+                return {"error": f"角色图不存在: {cp}"}
+            contents.append(Part.from_bytes(data=p.read_bytes(), mime_type=_guess_mime(p)))
+            labels.append(f"Image {i + 1}: Character reference")
+
+        panel_text = "\n".join(
+            f"Panel {i + 1}: {desc}" for i, desc in enumerate(panel_descs)
+        )
+        prompt = (
+            f"{chr(10).join(labels)}\n\n"
+            f"Generate a vertical storyboard strip with EXACTLY {num_panels} panels stacked vertically.\n\n"
+            f"{panel_text}\n\n"
+            f"STRICT RULES:\n"
+            f"1. EXACTLY {num_panels} panels, stacked vertically, 9:16 aspect ratio total.\n"
+            f"2. NO dialogue bubbles, NO text, NO sound effects — PURE VISUALS ONLY.\n"
+            f"3. NO borders, NO margins, NO white edges, NO gaps between panels.\n"
+            f"   Panels touch each other directly, artwork fills 100% of the area.\n"
+            f"4. Each panel MUST have a DIFFERENT camera angle and composition.\n"
+            f"5. Characters MUST match the reference images exactly.\n"
+            f"6. Anime/animation art style, cinematic, high quality.\n"
+        )
+        contents.append(prompt)
+
+        try:
+            # 1. Generate strip
+            client = get_genai_client()
+            resp = client.models.generate_content(
+                model="gemini-3.1-flash-image-preview",
+                contents=contents,
+                config=GCC(response_modalities=["IMAGE", "TEXT"]),
+            )
+            image_bytes = None
+            if resp.candidates:
+                for part in resp.candidates[0].content.parts:
+                    if part.inline_data and part.inline_data.mime_type.startswith("image/"):
+                        image_bytes = part.inline_data.data
+            if not image_bytes:
+                return {"error": "Gemini 未返回条漫图"}
+
+            strip_path = out_dir / f"strip_{strip_index}.png"
+            strip_path.write_bytes(image_bytes)
+
+            # 2. Split into panels
+            img = PILImage.open(strip_path)
+            w, h = img.size
+            panel_h = h // num_panels
+            raw_frames: list[Path] = []
+            for i in range(num_panels):
+                top = i * panel_h
+                bottom = top + panel_h
+                target_w = int(panel_h * 16 / 9)
+                if target_w > w:
+                    target_w = w
+                left = (w - target_w) // 2
+                panel = img.crop((left, top, left + target_w, bottom))
+                clip_num = (strip_index - 1) * 4 + i + 1
+                frame_path = out_dir / f"clip_{clip_num}_raw.png"
+                panel.save(frame_path)
+                raw_frames.append(frame_path)
+
+            # 3. Local upscale (PIL LANCZOS + UnsharpMask) + crop to exact 16:9
+            from PIL import ImageFilter
+
+            TARGET_H = 768
+            output_frames: list[str] = []
+            for raw in raw_frames:
+                img = PILImage.open(raw)
+                w, h = img.size
+
+                # Upscale to target height, keep aspect ratio
+                scale = TARGET_H / h
+                new_w = int(w * scale)
+                img = img.resize((new_w, TARGET_H), PILImage.LANCZOS)
+                img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
+
+                # Crop to exact 16:9
+                target_w = int(TARGET_H * 16 / 9)
+                if new_w >= target_w:
+                    left = (new_w - target_w) // 2
+                    img = img.crop((left, 0, left + target_w, TARGET_H))
+                # else: width not enough, keep as is
+
+                final_path = raw.parent / raw.name.replace("_raw.png", ".png")
+                img.save(final_path, quality=95)
+                output_frames.append(str(final_path))
+                raw.unlink(missing_ok=True)
+
+            return {
+                "strip_path": str(strip_path),
+                "frames": output_frames,
+                "strip_index": strip_index,
+                "count": len(output_frames),
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    elif name == "generate_video_clip":
+        from src.tools.video_generator import generate_video
+
+        clip_index = int(args.get("clip_index", 1))
+        video_dir = project_dir / "output" / "videos" if project_dir else Path("output/videos")
+        video_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            first_frame = args.get("first_frame", "")
+            images = [first_frame] if first_frame else None
+            output_dir = generate_video(
+                prompt=args["prompt"],
+                images=images,
+                aspect_ratio=args.get("aspect_ratio", "16:9"),
+                mode=args.get("video_mode", "grok"),
+                output_dir=str(video_dir),
+            )
+            video_files = sorted(output_dir.glob("*.mp4"), key=lambda f: f.stat().st_mtime, reverse=True)
+            if not video_files:
+                video_files = sorted(output_dir.glob("*.webm"), key=lambda f: f.stat().st_mtime, reverse=True)
+            if video_files:
+                return {"output_path": str(video_files[0]), "clip_index": clip_index}
+            return {"error": "视频生成完成但未找到输出文件"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    elif name == "merge_video_clips":
+        import subprocess
+
+        clip_paths = args.get("clip_paths", [])
+        output_path = Path(args.get("output_path", ""))
+        if not clip_paths:
+            return {"error": "clip_paths 不能为空"}
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # ffmpeg concat demuxer
+            list_file = output_path.parent / f"_concat_{output_path.stem}.txt"
+            with open(list_file, "w") as f:
+                for cp in clip_paths:
+                    p = Path(cp)
+                    if not p.exists():
+                        return {"error": f"视频文件不存在: {cp}"}
+                    f.write(f"file '{p.resolve()}'\n")
+
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
+                 "-c", "copy", str(output_path)],
+                capture_output=True, text=True, timeout=120,
+            )
+
+            if result.returncode != 0:
+                # Retry with re-encode if stream copy fails
+                result = subprocess.run(
+                    ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
+                     "-c:v", "libx264", "-c:a", "aac", str(output_path)],
+                    capture_output=True, text=True, timeout=300,
+                )
+
+            list_file.unlink(missing_ok=True)
+
+            if result.returncode != 0:
+                return {"error": f"ffmpeg 合并失败: {result.stderr[:500]}"}
+
+            return {"output_path": str(output_path), "clip_count": len(clip_paths)}
+        except FileNotFoundError:
+            return {"error": "ffmpeg 未安装，请先安装 ffmpeg"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    elif name == "write_storyboard":
+        p = Path(args["file_path"])
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # Validate JSON
+        try:
+            json.loads(args["content"])
+        except json.JSONDecodeError as e:
+            return {"error": f"JSON 格式错误: {e}"}
+        p.write_text(args["content"], encoding="utf-8")
+        return {"message": "分镜脚本写入成功", "file_path": str(p)}
+
+    elif name == "read_storyboard":
+        p = Path(args["file_path"])
+        if not p.exists():
+            return {"error": f"文件不存在: {args['file_path']}"}
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            return {"file_path": str(p), "content": data}
+        except json.JSONDecodeError as e:
+            return {"error": f"JSON 解析失败: {e}"}
 
     elif name == "describe_image":
         img_path = Path(args["image_path"])
@@ -800,44 +1133,47 @@ def _execute_tool(name: str, args: dict, project_dir: Path | None = None, lang: 
 
 # ========== Agent ==========
 
-SYSTEM_INSTRUCTION_TEMPLATE = (
-    "你是 AniDaily 动画条漫生成助手。你可以：\n"
-    "1. 检测图片中的人脸并风格化为动画角色\n"
-    "2. 编辑已有素材或凭空生成新素材\n"
-    "3. 分析场景\n"
-    "4. 生成竖向条漫（4-6格）\n"
-    "5. 读写剧本 md 文件\n\n"
+# ========== System instructions per mode ==========
+
+_COMMON_RULES = (
     "交互规则：\n"
-    "- **任务计划**：当用户的请求涉及 2 个以上步骤时（如「检测人脸并风格化」「生成条漫」等复合任务），"
+    "- **任务计划**：当用户的请求涉及 2 个以上步骤时，"
     "**必须先调用 propose_plan** 列出步骤让用户确认。简单单步操作不需要计划。"
     "每个步骤写清 label，可选填 tool（对应工具名）、needs_confirm（需要用户交互确认后才执行的步骤）、"
     "depends_on（依赖的步骤 id 列表，无依赖的步骤会并发执行）。\n"
     "**depends_on 规则**：如果步骤 B 需要步骤 A 的输出结果（如文件路径），则 B 必须 depends_on: [A.id]。"
-    "同类型的独立操作（如生成多个不同角色）互相不依赖，系统会自动并发执行。\n"
-    "- **needs_confirm 标记规则**：以下类型的步骤**必须**设置 needs_confirm=true：\n"
+    "同类型的独立操作互相不依赖，系统会自动并发执行。\n"
+    "- **needs_confirm 标记规则**：**凡是耗时较长或产出用户需要审阅的内容的步骤，都要标 needs_confirm=true**\n"
     "  - 选择类：选择人脸、选择角色\n"
-    "  - 生成类：风格化角色(stylize_character)、生成条漫(generate_comic_strip)、生成素材(generate_asset)、编辑素材(edit_asset)\n"
+    "  - 生成类：风格化角色(stylize_character)、生成素材(generate_asset)、编辑素材(edit_asset){extra_confirm_tools}\n"
     "  - 只有读取类(read_script)、列出文件(list_files)、重命名(rename_asset)、写入(write_script/update_script)等轻量操作不需要标记\n"
-    "  - 简单说：**凡是耗时较长或产出用户需要审阅的内容的步骤，都要标 needs_confirm=true**\n"
-    "- **严禁用文字询问确认**：绝对不要在文字中写「确认后开始执行」「准备好了吗」「您看这样可以吗」"
-    "「接下来继续吗」「是否继续」等确认语句。"
+    "- **严禁用文字询问确认**：绝对不要在文字中写「确认后开始执行」「准备好了吗」「您看这样可以吗」等确认语句。"
     "所有确认必须通过 propose_plan 工具实现，前端会展示可点击的按钮。\n"
     "- **分步执行**：用户确认计划后，系统会自动逐步发送步骤指令给你。"
     "当你收到「继续执行计划步骤 N: xxx」的指令时，执行对应的工具调用即可，每次只执行一个步骤。"
     "不要自行决定执行多个步骤，不要在文字中询问是否继续。\n"
-    "- 当用户发送图片时，不要自动执行任何工具。先确认用户的意图（例如：检测人脸？风格化角色？编辑素材？），"
-    "然后再执行对应操作。\n"
+    "- 当用户发送图片时，不要自动执行任何工具。先确认用户的意图，然后再执行对应操作。\n"
     "- 只有当用户明确要求执行某个操作时，才调用对应工具。\n"
-    "- 当用户给角色或素材起名、备注、改名时（如「这个人叫xxx」「把他命名为xxx」），"
-    "立即调用 rename_asset，它会同时重命名显示名称和文件名。"
-    "如果能从上下文推断出要重命名哪个文件，直接执行，不要反复确认。\n"
-    "- 人脸检测完成后，如果检测到人脸，**必须先向用户展示检测结果**（每个人脸的编号、年龄、性别等信息），"
-    "然后询问用户是否要对这些人脸进行风格化，以及要风格化哪些人（例如「全部」或「只要第1和第3个」）。"
+    "- 当用户给角色或素材起名、备注、改名时，立即调用 rename_asset。\n"
+    "- 人脸检测完成后，**必须先向用户展示检测结果**，然后询问用户要风格化哪些人。"
     "**绝对不要在检测后自动调用 stylize_character**，必须等用户确认。\n"
-    "- 当用户要求风格化角色时，**必须先调用 select_faces** 让用户在前端交互式选择要风格化哪些人脸，"
-    "用户确认后再对选中的人脸逐个调用 stylize_character。\n"
+    "- 当用户要求风格化角色时，**必须先调用 select_faces** 让用户在前端交互式选择。\n"
+    "- **update_script 失败时**：必须先用 read_script 重新读取文件内容，再用正确的 old_text 重试 update_script。\n"
     "- 工具返回的文件路径必须在后续操作中直接使用，不要猜测路径。\n"
     "- 如果不确定文件位置，先使用 list_files 工具查看。\n"
+    "- **风格设定**：项目根目录有 style.md，记录画风、语言、排版等偏好。"
+    "每次生成角色、条漫或素材前，必须先用 read_script 读取 style.md 并遵守其中的设定。\n"
+)
+
+_COMIC_INTRO = (
+    "你是 AniDaily 动画条漫生成助手（条漫模式）。你可以：\n"
+    "1. 检测图片中的人脸并风格化为动画角色\n"
+    "2. 编辑已有素材或凭空生成新素材\n"
+    "3. 生成竖向条漫（4-6格）\n"
+    "4. 读写剧本 md 文件\n\n"
+)
+
+_COMIC_WORKFLOW = (
     "- **生成条漫的工作流**：\n"
     "  1. 先用 list_files 查看 output/stylized/ 目录，了解已有角色。\n"
     "  2. 调用 select_characters，根据用户描述预选最匹配的角色（preselected 里填 path+label）。\n"
@@ -845,21 +1181,157 @@ SYSTEM_INSTRUCTION_TEMPLATE = (
     "  3. 用户确认角色后，写剧本（write_script），按条划分（每条4-6格）。\n"
     "  4. 把剧本展示给用户，询问：要生成几条条漫？默认1条。\n"
     "  5. 用户确认后，对每条调用一次 generate_comic_strip，传入用户确认的角色路径。\n"
-    "  6. 绝对不要用 generate_asset 生成条漫，generate_asset 不支持角色参考图。\n"
-    "- **风格设定**：项目根目录有 style.md，记录画风、语言、排版等偏好。"
-    "每次生成角色、条漫或素材前，必须先用 read_script 读取 style.md 并遵守其中的设定。\n\n"
-    "{project_context}"
-    "{lang_instruction}"
+    "  6. 绝对不要用 generate_asset 生成条漫，generate_asset 不支持角色参考图。\n\n"
 )
+
+_STORYBOARD_INTRO = (
+    "你是 AniDaily 动画分镜生成助手（分镜模式）。你可以：\n"
+    "1. 检测图片中的人脸并风格化为动画角色\n"
+    "2. 编辑已有素材或凭空生成新素材\n"
+    "3. 为每个分镜 clip 合成首帧关键画（角色+场景合成，16:9 横屏）\n"
+    "4. 读写剧情脚本（md）和分镜脚本（JSON）\n\n"
+)
+
+_STORYBOARD_WORKFLOW = (
+    "- **分镜视频工作流**（收到用户请求后，**必须调用 propose_plan** 列出以下步骤让用户确认，绝对不要用文字列计划）：\n"
+    "  1. 先用 list_files 查看 output/stylized/ 目录，了解已有角色。\n"
+    "  2. 调用 select_characters，预选角色让用户确认。(needs_confirm=true)\n"
+    "  3. 写剧情脚本（write_script 到 output/scripts/story_xxx.md）：角色设定、故事线、情节点。\n"
+    "  4. 基于剧情脚本生成分镜脚本 JSON（write_storyboard 到 output/storyboards/xxx.json），格式如下：\n"
+    '     ```json\n'
+    '     {{\n'
+    '       "title": "黑客松传说",\n'
+    '       "characters": {{\n'
+    '         "Jules": "粉色背心女生",\n'
+    '         "Peize": "黄色连帽衫男生"\n'
+    '       }},\n'
+    '       "clips": [\n'
+    '         {{\n'
+    '           "clip_index": 1,\n'
+    '           "description": "凌晨黑客松教室，粉色背心女生皱眉走向黄色连帽衫男生质问代码进度",\n'
+    '           "scene": "凌晨的黑客松教室",\n'
+    '           "scene_image": "/path/to/hackathon_room.png",\n'
+    '           "shot": {{\n'
+    '             "camera": "中景",\n'
+    '             "action": "粉色背心女生皱眉走向黄色连帽衫男生，双手交叉质问",\n'
+    '             "lines": [\n'
+    '               {{"speaker": "Jules", "text": "代码写完了吗？"}}\n'
+    '             ]\n'
+    '           }}\n'
+    '         }},\n'
+    '         {{\n'
+    '           "clip_index": 2,\n'
+    '           "description": "黄色连帽衫男生惊慌回头，嘴角抽搐",\n'
+    '           "scene": "凌晨的黑客松教室",\n'
+    '           "scene_image": "/path/to/hackathon_room.png",\n'
+    '           "shot": {{\n'
+    '             "camera": "特写",\n'
+    '             "action": "黄色连帽衫男生惊慌回头，嘴角抽搐",\n'
+    '             "lines": [\n'
+    '               {{"speaker": "Peize", "text": "还...还差一点！"}}\n'
+    '             ]\n'
+    '           }}\n'
+    '         }},\n'
+    '         {{\n'
+    '           "clip_index": 3,\n'
+    '           "description": "粉色背心女生坐到电脑前开始疯狂打字，屏幕代码飞速滚动",\n'
+    '           "scene": "同一间教室，屏幕前",\n'
+    '           "scene_image": "/path/to/hackathon_room.png",\n'
+    '           "shot": {{\n'
+    '             "camera": "全景",\n'
+    '             "action": "粉色背心女生坐下疯狂打字，表情专注",\n'
+    '             "lines": [\n'
+    '               {{"speaker": "narrator", "text": "键盘的敲击声回荡在空荡的教室里。"}}\n'
+    '             ]\n'
+    '           }}\n'
+    '         }}\n'
+    '       ]\n'
+    '     }}\n'
+    '     ```\n'
+    "  5. **关键规则**：\n"
+    "     - 每个 clip = 1 个 shot = 1 个 6 秒视频（16:9 横屏）\n"
+    "     - **clip 结构**：\n"
+    "       - clip.description: 片段概括描述（直接用作视频 prompt）\n"
+    "       - shot.camera: 镜头景别（全景/中景/近景/特写等）\n"
+    "       - shot.action: 具体动作和表情描述\n"
+    "       - shot.lines: 台词/旁白数组，每条 {{speaker, text}}。speaker 为角色名或 'narrator'（旁白/OS）\n"
+    "         角色台词方便后期按角色分配不同音色，narrator 用旁白音色\n"
+    "     - **每个 shot 只允许一个人说话**：lines 中所有条目的 speaker 必须相同（同一个角色或同一个 narrator）。\n"
+    "       如果需要对话（A说→B回），拆成两个 clip。\n"
+    "     - **角色 = 外貌标签（服装+特征）**：如「粉色背心女生」「蓝衣服男人」\n"
+    "       同一套衣服 = 同一个角色，只需一个 asset，表情/动作在 shot.action 中描述\n"
+    "     - **shot.action 描述动作+表情**：「粉色背心女生皱眉走过来」「蓝衣服男人惊慌回头嘴角抽搐」\n"
+    "     - **scene_image**: 每个 clip 指定一张场景参考图，同一场景的 clips 用同一张图\n"
+    "     - 如果没有合适的场景图，先用 generate_asset 生成到 output/scenes/stylized/\n"
+    "  6. 在 propose_plan 中展示分镜脚本步骤供用户确认。(needs_confirm=true)\n\n"
+    "  **Step 2: 生成首帧（条漫切割法）**\n"
+    "  7. clip 数量必须是 4 的倍数。每 4 个 clip 调用一次 generate_storyboard_strip（needs_confirm=true）：\n"
+    "     - character_paths: 角色素材图路径\n"
+    "     - panel_descriptions: 4 个格子的画面描述，取每个 clip 的 shot.camera + shot.action\n"
+    "       每格描述要写清：景别、场景、角色外貌标签、动作姿态、表情\n"
+    "     - strip_index: 条漫编号（第1条=clip 1-4，第2条=clip 5-8）\n"
+    "     - output_dir: output/storyboards/frames\n"
+    "     该工具内部自动：生成4格无台词条漫 → 切割 → 放大 → 裁到16:9\n"
+    "     多条之间串行（strip_2 depends_on strip_1），同条4格天然角度不同。\n"
+    "     首帧的 refine（放大）可以并发。\n\n"
+    "  **Step 3: 生成视频脚本**\n"
+    "  8. 对每个 clip 基于首帧 + clip.description 写视频脚本，用 write_script 保存为独立 md 文件\n"
+    "     到 output/storyboards/clip_scripts/clip_N.md（needs_confirm=true，可并发）。\n"
+    "     md 内容包含：\n"
+    "     ```\n"
+    "     # Clip N\n"
+    "     ## 画面描述\n"
+    "     （shot.camera + shot.action 的详细描述）\n"
+    "     ## 台词\n"
+    "     （shot.lines 的内容，无台词则写「无」）\n"
+    "     ## 视频 Prompt\n"
+    "     （简短视频 prompt，前 20 词最重要，格式：[动作] + [镜头运动] + [风格]）\n"
+    "     ```\n"
+    "     视频 prompt 规则：\n"
+    "     - 例如：「粉色背心女生走向蓝衣男生质问。缓慢推近。动画风格。No background music.」\n"
+    "     - 如果有台词，prompt 中要包含台词，并注明语言（中文加「角色说中文。」，英文加「Characters speak English.」）\n"
+    "     - **末尾必须加「No background music.」**，后期统一配乐。\n\n"
+    "  **Step 4: 生成视频**\n"
+    "  9. 对每个 clip 先用 read_script 读取对应的 clip_scripts/clip_N.md 获取视频 prompt，\n"
+    "     然后调用 generate_video_clip（needs_confirm=true，可并发）：\n"
+    "     - first_frame: 该 clip 的首帧图路径（Step 2 的输出）\n"
+    "     - prompt: clip 脚本中「## 视频 Prompt」部分的内容\n"
+    "     - clip_index, aspect_ratio: '16:9'\n\n"
+    "  **Step 5: 合并视频**\n"
+    "  10. 所有 clip 视频生成完后，调用 merge_video_clips 合并为完整视频（depends_on 所有 Step 4）：\n"
+    "     - clip_paths: 按顺序排列的所有 clip 视频路径\n"
+    "     - output_path: output/videos/final_merged.mp4\n"
+    "     单独的 clip 文件保留不删除。\n\n"
+    "  **以上所有步骤必须在一个 propose_plan 中完整列出。**\n"
+    "  Step 2 条漫条之间串行，Step 3/Step 4 各 clip 可并发，Step 5 depends_on 所有 Step 4。\n"
+    "  clip 数量必须是 4 的倍数。\n\n"
+)
+
+
+def _build_system_instruction_template(mode: str) -> str:
+    """Build the system instruction template string for the given mode."""
+    if mode == "storyboard":
+        intro = _STORYBOARD_INTRO
+        extra_confirm = "、生成分镜条(generate_storyboard_strip)、生成视频(generate_video_clip)"
+        workflow = _STORYBOARD_WORKFLOW
+    else:
+        intro = _COMIC_INTRO
+        extra_confirm = "、生成条漫(generate_comic_strip)"
+        workflow = _COMIC_WORKFLOW
+
+    rules = _COMMON_RULES.format(extra_confirm_tools=extra_confirm)
+    return intro + rules + workflow + "{project_context}" + "{lang_instruction}"
 
 
 class Agent:
     """对话 Agent，维护多轮对话历史，通过 Gemini function calling 调用 tools。"""
 
-    def __init__(self, project_dir: Path | None = None, lang: str = "zh", history: list[Content] | None = None):
+    def __init__(self, project_dir: Path | None = None, lang: str = "zh", history: list[Content] | None = None, mode: str = "comic", interaction_mode: str = "plan"):
         self.history: list[Content] = history or []
         self.project_dir = project_dir
         self.lang = lang
+        self.mode = mode  # "comic" or "storyboard"
+        self.interaction_mode = interaction_mode  # "ask", "edit", "plan"
         # Plan execution state
         self.active_plan: list[dict] | None = None
         self.plan_paused: bool = False
@@ -922,12 +1394,16 @@ class Agent:
         return bool(self.active_plan and any(s["status"] in ("pending", "active") for s in self.active_plan))
 
     def _plan_should_gate(self, step: dict) -> bool:
-        """Check if a step should gate (pause for user)."""
-        if not step.get("needs_confirm"):
-            return False
-        if self.plan_auto:
-            return step.get("tool") in self.INTERACTIVE_TOOLS
-        return True
+        """Check if a step should gate (pause for user).
+
+        - edit mode: every step gates (user confirms each one)
+        - plan mode: after plan confirmed, no gates (auto-execute all)
+        - ask mode: no tools called, won't reach here
+        """
+        if self.interaction_mode == "edit":
+            return True  # 每步都暂停
+        # plan mode: 确认计划后全部自动
+        return False
 
     def _build_system_instruction(self) -> str:
         if self.project_dir:
@@ -941,7 +1417,10 @@ class Agent:
                 f"  - 场景: {out / 'scenes' / 'stylized'}/\n"
                 f"  - 去人场景: {out / 'scenes' / 'no_people'}/\n"
                 f"  - 条漫: {out / 'panels'}/\n"
-                f"  - 剧本: {out / 'scripts'}/\n\n"
+                f"  - 视频片段: {out / 'videos'}/\n"
+                f"  - 分镜脚本(JSON): {out / 'storyboards'}/\n"
+                f"  - 视频脚本(MD): {out / 'storyboards' / 'clip_scripts'}/\n"
+                f"  - 剧本(MD): {out / 'scripts'}/\n\n"
             )
             # 自动注入风格设定
             style_path = self.project_dir / "style.md"
@@ -956,7 +1435,34 @@ class Agent:
         else:
             project_context = "所有文件路径基于项目根目录。输出文件默认放在 output/ 下。\n"
         lang_instruction = "Reply in English." if self.lang == "en" else "回复使用中文。"
-        return SYSTEM_INSTRUCTION_TEMPLATE.format(project_context=project_context, lang_instruction=lang_instruction)
+
+        # Interaction mode rules
+        if self.interaction_mode == "ask":
+            interaction_rules = (
+                "\n**当前交互模式：Ask（聊天模式）**\n"
+                "- 只回复文字，与用户讨论、积累上下文。\n"
+                "- 只允许使用 read_script、read_storyboard、list_files、describe_image 等读取类工具来查看现有内容。\n"
+                "- 禁止调用任何生成类、编辑类、写入类工具。\n"
+                "- 禁止调用 propose_plan。\n"
+                "- 帮用户完善想法，等用户切换到其他模式后再执行。\n\n"
+            )
+        elif self.interaction_mode == "edit":
+            interaction_rules = (
+                "\n**当前交互模式：Edit（逐步确认模式）**\n"
+                "- 收到用户指令后直接执行，不需要调用 propose_plan。\n"
+                "- 每次只执行一个操作，展示结果后等用户确认再继续下一步。\n"
+                "- 不要自动连续执行多个操作。\n\n"
+            )
+        else:  # plan
+            interaction_rules = (
+                "\n**当前交互模式：Plan（计划模式）**\n"
+                "- 复杂任务必须先调用 propose_plan 列出完整步骤。\n"
+                "- 用户确认计划后，全部步骤自动执行，不再逐步暂停。\n"
+                "- 用户随时可以取消正在执行的计划。\n\n"
+            )
+
+        template = _build_system_instruction_template(self.mode)
+        return template.format(project_context=project_context, lang_instruction=lang_instruction) + interaction_rules
 
     def _build_asset_summary(self) -> str:
         """读取项目各分类的 assets.json，生成素材摘要注入到 system instruction。"""
@@ -970,6 +1476,8 @@ class Agent:
             "场景": out / "scenes" / "stylized",
             "去人场景": out / "scenes" / "no_people",
             "条漫": out / "panels",
+            "视频片段": out / "videos",
+            "分镜脚本": out / "storyboards",
             "剧本": out / "scripts",
         }
         lines: list[str] = []
@@ -997,10 +1505,19 @@ class Agent:
                     lines.append(f"    ... 等共 {len(files)} 个文件")
         return "\n".join(lines)
 
+    # Read-only tools allowed in Ask mode
+    ASK_MODE_TOOLS = {"read_script", "read_storyboard", "list_files", "describe_image"}
+
     def _build_config(self) -> GenerateContentConfig:
+        tool_set = STORYBOARD_TOOLS if self.mode == "storyboard" else COMIC_TOOLS
+
+        # Ask mode: only read-only tools
+        if self.interaction_mode == "ask":
+            tool_set = [t for t in tool_set if t.name in self.ASK_MODE_TOOLS]
+
         return GenerateContentConfig(
             system_instruction=self._build_system_instruction(),
-            tools=[{"function_declarations": TOOL_DECLARATIONS}],
+            tools=[{"function_declarations": tool_set}] if tool_set else [],
             tool_config=ToolConfig(
                 function_calling_config=FunctionCallingConfig(
                     mode=FunctionCallingConfigMode.AUTO,
@@ -1071,6 +1588,18 @@ class Agent:
                 break
 
             # Execute function calls (concurrent if multiple)
+            # Ask mode: block any tool not in ASK_MODE_TOOLS
+            if self.interaction_mode == "ask":
+                blocked = [p for p in function_call_parts if p.function_call.name not in self.ASK_MODE_TOOLS]
+                if blocked:
+                    blocked_names = [p.function_call.name for p in blocked]
+                    function_call_parts = [p for p in function_call_parts if p.function_call.name in self.ASK_MODE_TOOLS]
+                    logger.warning(f"Ask mode blocked tools: {blocked_names}")
+                    if not function_call_parts:
+                        # All tools blocked, return error as text
+                        yield {"event": "text_delta", "delta": f"\n(Ask 模式下不执行工具: {', '.join(blocked_names)})\n"}
+                        break
+
             tasks: list[dict] = []
             for fc_part in function_call_parts:
                 fc = fc_part.function_call

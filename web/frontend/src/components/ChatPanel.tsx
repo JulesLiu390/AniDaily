@@ -7,6 +7,9 @@ import CharacterSelectCard from "./CharacterSelectCard";
 import FaceSelectCard from "./FaceSelectCard";
 import TaskPlanCard from "./TaskPlanCard";
 import ConversationHistory from "./ConversationHistory";
+import ModeSelector from "./ModeSelector";
+import InteractionModeSelector from "./InteractionModeSelector";
+import type { InteractionMode } from "./InteractionModeSelector";
 import type { FaceInfo } from "./FaceSelectCard";
 import { useLang } from "../LanguageContext";
 
@@ -43,6 +46,8 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
   // Conversation history
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationTitle, setConversationTitle] = useState("");
+  const [mode, setMode] = useState<"comic" | "storyboard">("comic");
+  const [interactionMode, setInteractionMode] = useState<InteractionMode>("plan");
   const conversationIdRef = useRef<string | null>(null);
   useEffect(() => { conversationIdRef.current = conversationId; }, [conversationId]);
 
@@ -357,6 +362,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
         project,
         abort.signal,
         lang,
+        { mode, interactionMode },
       );
     } catch (err) {
       if (abort.signal.aborted) {
@@ -370,7 +376,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
       }));
       setLoading(false);
     }
-  }, [conversationId, project, onNewImages, updateLastAssistant, makeCallbacks, lang, t]);
+  }, [conversationId, project, onNewImages, updateLastAssistant, makeCallbacks, lang, t, mode, interactionMode]);
 
   const handleSend = async () => {
     const text = input.trim();
@@ -529,7 +535,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
         project,
         abort.signal,
         lang,
-        { planAction: "confirm", planSteps: steps, planAuto: autoExecute },
+        { planAction: "confirm", planSteps: steps, planAuto: autoExecute, mode, interactionMode },
       );
     } catch (err) {
       if (!abort.signal.aborted) {
@@ -576,7 +582,7 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
         project,
         abort.signal,
         lang,
-        { planAction: "continue", planPrompt: prompt },
+        { planAction: "continue", planPrompt: prompt, mode, interactionMode },
       );
     } catch (err) {
       if (!abort.signal.aborted) {
@@ -773,6 +779,10 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
           onDelete={handleDeleteConversation}
           onRefresh={loadConversations}
         />
+        <div className="flex items-center gap-2">
+          <ModeSelector mode={mode} onChange={setMode} disabled={loading} />
+          <InteractionModeSelector mode={interactionMode} onChange={setInteractionMode} disabled={loading} />
+        </div>
       </div>
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -926,7 +936,17 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                     </div>
                   ) : (
                     textContent && (
-                      <div className="whitespace-pre-wrap text-sm">{textContent}</div>
+                      <div className="whitespace-pre-wrap text-sm">
+                        {textContent.split(/(!\[[^\]]*\]\([^)]+\))/).map((part, i) => {
+                          const imgMatch = part.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+                          if (imgMatch) {
+                            const [, alt, url] = imgMatch;
+                            const src = url.startsWith("/") ? getFileUrl(url) : url;
+                            return <img key={i} src={src} alt={alt} className="my-2 rounded-lg max-h-64 object-contain" />;
+                          }
+                          return <span key={i}>{part}</span>;
+                        })}
+                      </div>
                     )
                   )}
 
@@ -939,13 +959,16 @@ export default function ChatPanel({ project, onNewImages, pendingAssets, onClear
                     </div>
                   )}
 
-                  {/* Non-generation tool images (detect_faces etc.) */}
+                  {/* Non-generation tool images — only show images not already displayed in ToolCallCards */}
                   {(() => {
-                    const GENERATION_TOOLS = new Set(["stylize_character", "generate_asset", "generate_comic_strip", "edit_asset"]);
-                    const nonGenImages = allImages.filter((img) => !GENERATION_TOOLS.has(img.tool));
-                    return nonGenImages.length > 0 ? (
+                    const TOOLS_WITH_CARDS = new Set([
+                      "stylize_character", "generate_asset", "generate_comic_strip", "edit_asset",
+                      "generate_storyboard_strip", "generate_video_clip", "detect_faces_in_image",
+                    ]);
+                    const nonCardImages = allImages.filter((img) => !TOOLS_WITH_CARDS.has(img.tool));
+                    return nonCardImages.length > 0 ? (
                       <div className="mt-2 grid grid-cols-2 gap-2">
-                        {nonGenImages.map((img, j) => (
+                        {nonCardImages.map((img, j) => (
                           <a key={j} href={getFileUrl(img.url)} target="_blank" rel="noopener noreferrer">
                             <img src={getFileUrl(img.url)} alt={img.tool} className="rounded-lg border border-gray-200 max-h-64 object-contain" />
                           </a>
